@@ -1,0 +1,147 @@
+[
+  {
+    "stage_id": 0,
+    "generator_name": "ProGAN",
+    "source_dataset": "aigibench"
+  },
+  {
+    "stage_id": 1,
+    "generator_name": "Stable Diffusion 1.5",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 2,
+    "generator_name": "Stable Diffusion 2.1",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 3,
+    "generator_name": "DreamShaper",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 4,
+    "generator_name": "EpicDream",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 5,
+    "generator_name": "Realism",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 6,
+    "generator_name": "Touch of Realism",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 7,
+    "generator_name": "MVC5000",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 8,
+    "generator_name": "Mystic",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 9,
+    "generator_name": "Amateur Snapshot Photos",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 10,
+    "generator_name": "Stable Diffusion XL (SDXL)",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 11,
+    "generator_name": "DALL·E 3",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 12,
+    "generator_name": "Midjourney v6",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 13,
+    "generator_name": "Epic Realism",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 14,
+    "generator_name": "RealVisXL-v5",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 15,
+    "generator_name": "Juggernaut",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 16,
+    "generator_name": "Imagen 3",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 17,
+    "generator_name": "FLUX.1-Schnell",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 18,
+    "generator_name": "FLUX.1-dev",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 19,
+    "generator_name": "Grok 2",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 20,
+    "generator_name": "FLUX.1.1-Pro",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 21,
+    "generator_name": "Stable Diffusion 3.5",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 22,
+    "generator_name": "Recraft v3",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 23,
+    "generator_name": "Ideogram 3.0",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 24,
+    "generator_name": "Midjourney v7",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 25,
+    "generator_name": "GPT Image 1",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 26,
+    "generator_name": "HiDream-I1 Full",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 27,
+    "generator_name": "Chroma",
+    "source_dataset": "openfake"
+  },
+  {
+    "stage_id": 28,
+    "generator_name": "Imagen 4",
+    "source_dataset": "openfake"
+  }
+]
