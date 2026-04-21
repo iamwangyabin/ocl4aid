@@ -73,6 +73,8 @@ def base_parser():
     # ========== FlyPrompt configurations ==========
     parser.add_argument("--len_prompt", type=int, default=20, help="The length of the prompt for each expert")
     parser.add_argument("--pos_prompt", type=int, nargs="+", default=[0, 1, 2, 3, 4], help="The position of the prompt")
+    parser.add_argument("--logit_type", type=str, default="cos_sim", choices=["linear", "cos_sim"],
+                        help="Classifier logit type for SinglePrompt.")
     parser.add_argument("--rp_dim", type=int, default=10000, help="The dimension of the random projection head")
     parser.add_argument("--rp_ridge", type=float, default=1e4, help="The ridge parameter for the random projection head")
     parser.add_argument("--ema_ratio", type=float, nargs="+", default=[0.9, 0.99], help="The EMA ratio for the expert FCs")

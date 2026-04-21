@@ -7,6 +7,7 @@ from .ranpac import RanPAC
 from .slca import SLCA
 from .hide_norga_trainer import HiDeGCLTrainer, NoRGaGCLTrainer
 from .sdlora import SDLoRAGCL
+from .singleprompt import SinglePromptTrainer
 from .sprompt import SPrompt as SPromptTrainer
 
 METHODS = {
@@ -22,5 +23,6 @@ METHODS = {
     "hide_adapter": HiDeGCLTrainer,
     "norga": NoRGaGCLTrainer,
     "sdlora": SDLoRAGCL,
+    "singleprompt": SinglePromptTrainer,
     "sprompt": SPromptTrainer,
 }
