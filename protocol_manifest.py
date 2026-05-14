@@ -13,9 +13,7 @@ from protocol_config import (
     DEFAULT_SEED,
     EXTERNAL_SOURCE_DATASET,
     GENERATOR_ORDER,
-    GENERATOR_STAGE_MAP,
     INTERNAL_DATASET,
-    MAX_STAGE_ID,
 )
 
 
@@ -146,6 +144,7 @@ def build_protocol_from_records(
     source_records: Iterable[SourceRecord | dict[str, Any]],
     *,
     seed: int = DEFAULT_SEED,
+    openfake_only: bool = False,
 ) -> ProtocolArtifacts:
     source = [
         record if isinstance(record, SourceRecord) else SourceRecord.from_dict(record)
@@ -154,26 +153,62 @@ def build_protocol_from_records(
     record_map = {record.record_id: record for record in source}
     _validate_unique_record_ids(source)
 
-    shuffled_groups = _group_and_shuffle_training_fakes(source, seed=seed)
-    stage_to_fake_ids = {stage_id: [] for stage_id in range(MAX_STAGE_ID + 1)}
-    fake_stage_generators = {stage_id: set() for stage_id in range(MAX_STAGE_ID + 1)}
+    generator_order = _protocol_generator_order(openfake_only=openfake_only)
+    generator_stage_map = {
+        entry["generator_name"]: entry["stage_id"] for entry in generator_order
+    }
+    max_stage_id = max(entry["stage_id"] for entry in generator_order)
+
+    shuffled_groups = _group_and_shuffle_training_fakes(
+        source,
+        seed=seed,
+        generator_stage_map=generator_stage_map,
+        openfake_only=openfake_only,
+    )
+    stage_to_fake_ids = {stage_id: [] for stage_id in range(max_stage_id + 1)}
+    fake_stage_generators = {stage_id: set() for stage_id in range(max_stage_id + 1)}
 
     for generator_name, fake_group in shuffled_groups.items():
-        first_stage = GENERATOR_STAGE_MAP[generator_name]
-        for assigned_stage, record_ids in _assign_blurry_windows(fake_group, first_stage).items():
+        first_stage = generator_stage_map[generator_name]
+        for assigned_stage, record_ids in _assign_blurry_windows(
+            fake_group,
+            first_stage,
+            max_stage_id=max_stage_id,
+        ).items():
             stage_to_fake_ids[assigned_stage].extend(record_ids)
             fake_stage_generators[assigned_stage].add(generator_name)
 
-    stage_to_real_ids = _assign_real_slices(record_map, stage_to_fake_ids, seed=seed)
+    stage_to_real_ids = _assign_real_slices(
+        record_map,
+        stage_to_fake_ids,
+        seed=seed,
+        max_stage_id=max_stage_id,
+        openfake_only=openfake_only,
+    )
 
     records: list[ManifestRecord] = []
-    for stage_id in range(MAX_STAGE_ID + 1):
+    for stage_id in range(max_stage_id + 1):
         for record_id in stage_to_fake_ids[stage_id] + stage_to_real_ids[stage_id]:
             source_record = record_map[record_id]
-            records.append(_to_manifest_record(source_record, stage_id=stage_id, is_external=False))
+            records.append(
+                _to_manifest_record(
+                    source_record,
+                    stage_id=stage_id,
+                    is_external=False,
+                    generator_stage_map=generator_stage_map,
+                )
+            )
 
-    internal_tests = _build_internal_test_slices(record_map, seed=seed)
-    external_tests = _build_external_test_slices(record_map, seed=seed)
+    internal_tests = _build_internal_test_slices(
+        record_map,
+        seed=seed,
+        generator_stage_map=generator_stage_map,
+    )
+    external_tests = (
+        {}
+        if openfake_only
+        else _build_external_test_slices(record_map, seed=seed)
+    )
 
     used_test_ids = set()
     for test_slice in list(internal_tests.values()) + list(external_tests.values()):
@@ -186,6 +221,7 @@ def build_protocol_from_records(
                     source_record,
                     stage_id=None,
                     is_external=test_slice.name in external_tests,
+                    generator_stage_map=generator_stage_map,
                 )
             )
             used_test_ids.add(record_id)
@@ -202,7 +238,7 @@ def build_protocol_from_records(
     train_by_stage = {
         stage_id: {
             "stage_id": stage_id,
-            "stage_name": GENERATOR_ORDER[stage_id]["generator_name"],
+            "stage_name": generator_order[stage_id]["generator_name"],
             "sample_ids": stage_to_fake_ids[stage_id] + stage_to_real_ids[stage_id],
             "fake_ids": stage_to_fake_ids[stage_id],
             "real_ids": stage_to_real_ids[stage_id],
@@ -210,21 +246,39 @@ def build_protocol_from_records(
             "real_count": len(stage_to_real_ids[stage_id]),
             "generators": sorted(fake_stage_generators[stage_id]),
         }
-        for stage_id in range(MAX_STAGE_ID + 1)
+        for stage_id in range(max_stage_id + 1)
     }
 
     label_space = {"real": 0}
-    for entry in GENERATOR_ORDER:
+    for entry in generator_order:
         label_space[entry["generator_name"]] = entry["stage_id"] + 1
 
     return ProtocolArtifacts(
         records=sorted(records_by_id.values(), key=lambda item: item.record_id),
-        generator_order=GENERATOR_ORDER,
+        generator_order=generator_order,
         label_space=label_space,
         train_by_stage=train_by_stage,
         internal_tests=internal_tests,
         external_tests=external_tests,
     )
+
+
+def _protocol_generator_order(*, openfake_only: bool) -> list[dict[str, Any]]:
+    if not openfake_only:
+        return [dict(entry) for entry in GENERATOR_ORDER]
+
+    openfake_entries = [
+        entry
+        for entry in GENERATOR_ORDER
+        if entry["source_dataset"] == INTERNAL_DATASET
+    ]
+    return [
+        {
+            **entry,
+            "stage_id": stage_id,
+        }
+        for stage_id, entry in enumerate(openfake_entries)
+    ]
 
 
 def _validate_unique_record_ids(records: Iterable[SourceRecord]) -> None:
@@ -242,12 +296,19 @@ def _group_and_shuffle_training_fakes(
     records: Iterable[SourceRecord],
     *,
     seed: int,
+    generator_stage_map: dict[str, int],
+    openfake_only: bool,
 ) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
     for record in records:
         if record.split != "train" or record.binary_label != "fake":
             continue
-        if record.generator_name not in GENERATOR_STAGE_MAP:
+        if record.generator_name not in generator_stage_map:
+            continue
+        if openfake_only:
+            if record.source_dataset != INTERNAL_DATASET:
+                continue
+            grouped.setdefault(record.generator_name, []).append(record.record_id)
             continue
         if record.generator_name == "ProGAN" and record.source_dataset != EXTERNAL_SOURCE_DATASET:
             continue
@@ -258,17 +319,22 @@ def _group_and_shuffle_training_fakes(
     shuffled: dict[str, list[str]] = {}
     for generator_name, record_ids in grouped.items():
         ordered_ids = sorted(record_ids)
-        rng = random.Random(seed + GENERATOR_STAGE_MAP[generator_name])
+        rng = random.Random(seed + generator_stage_map[generator_name])
         rng.shuffle(ordered_ids)
         shuffled[generator_name] = ordered_ids
     return shuffled
 
 
-def _assign_blurry_windows(record_ids: list[str], first_stage: int) -> dict[int, list[str]]:
+def _assign_blurry_windows(
+    record_ids: list[str],
+    first_stage: int,
+    *,
+    max_stage_id: int,
+) -> dict[int, list[str]]:
     available = [
         (first_stage + offset, weight)
         for offset, weight in enumerate(BLURRY_WEIGHTS)
-        if first_stage + offset <= MAX_STAGE_ID
+        if first_stage + offset <= max_stage_id
     ]
     total_weight = sum(weight for _, weight in available)
     normalized = [(stage_id, weight / total_weight) for stage_id, weight in available]
@@ -301,6 +367,8 @@ def _assign_real_slices(
     stage_to_fake_ids: dict[int, list[str]],
     *,
     seed: int,
+    max_stage_id: int,
+    openfake_only: bool,
 ) -> dict[int, list[str]]:
     aigibench_real = sorted(
         record.record_id
@@ -320,11 +388,15 @@ def _assign_real_slices(
     random.Random(seed + 1).shuffle(openfake_real)
 
     used: set[str] = set()
-    stage_to_real_ids = {stage_id: [] for stage_id in range(MAX_STAGE_ID + 1)}
-    for stage_id in range(MAX_STAGE_ID + 1):
+    stage_to_real_ids = {stage_id: [] for stage_id in range(max_stage_id + 1)}
+    for stage_id in range(max_stage_id + 1):
         target = len(stage_to_fake_ids[stage_id])
-        primary_pool = aigibench_real if stage_id == 0 else openfake_real
-        fallback_pool = openfake_real if stage_id == 0 else aigibench_real
+        if openfake_only:
+            primary_pool = openfake_real
+            fallback_pool = []
+        else:
+            primary_pool = aigibench_real if stage_id == 0 else openfake_real
+            fallback_pool = openfake_real if stage_id == 0 else aigibench_real
         selected = _take_available(primary_pool, used, target)
         if len(selected) < target:
             selected.extend(_take_available(fallback_pool, used, target - len(selected)))
@@ -355,6 +427,7 @@ def _build_internal_test_slices(
     record_map: dict[str, SourceRecord],
     *,
     seed: int,
+    generator_stage_map: dict[str, int],
 ) -> dict[str, TestSlice]:
     openfake_real_pool = sorted(
         record.record_id
@@ -372,7 +445,7 @@ def _build_internal_test_slices(
     )
 
     internal: dict[str, TestSlice] = {}
-    for generator_name in GENERATOR_STAGE_MAP:
+    for generator_name in generator_stage_map:
         if generator_name == "ProGAN":
             fake_ids = sorted(
                 record.record_id
@@ -483,18 +556,19 @@ def _to_manifest_record(
     *,
     stage_id: int | None,
     is_external: bool,
+    generator_stage_map: dict[str, int],
 ) -> ManifestRecord:
     if source_record.binary_label == "real":
         class_id = 0
         generator_id = -1
     else:
-        if source_record.generator_name not in GENERATOR_STAGE_MAP:
+        if source_record.generator_name not in generator_stage_map:
             if not is_external:
                 raise ValueError(f"Unknown generator for fake sample: {source_record.generator_name}")
             generator_id = -1
             class_id = -1
         else:
-            generator_id = GENERATOR_STAGE_MAP[source_record.generator_name]
+            generator_id = generator_stage_map[source_record.generator_name]
             class_id = generator_id + 1
 
     return ManifestRecord(

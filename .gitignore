@@ -23,6 +23,10 @@ venv/
 env/
 ENV/
 
+# Local datasets and experiment outputs
+data/
+results/
+
 # Notebook and local Python runtime files
 .ipynb_checkpoints/
 .python-version

@@ -71,12 +71,19 @@ class OpenFakeProtocol(Dataset):
             self.targets.append(class_id if class_id >= 0 else 0)
 
         self.stage_indices = {}
+        self.active_stage_ids = []
+        self.stage_generators = {}
         if train:
             for stage_id, stage_info in payload["train_by_stage"].items():
-                self.stage_indices[int(stage_id)] = [
+                stage_id_int = int(stage_id)
+                self.stage_indices[stage_id_int] = [
                     self.record_id_to_index[record_id]
                     for record_id in stage_info["sample_ids"]
                 ]
+                self.stage_generators[stage_id_int] = list(stage_info["generators"])
+                if self.stage_indices[stage_id_int]:
+                    self.active_stage_ids.append(stage_id_int)
+            self.active_stage_ids.sort()
 
         self.internal_slices = {}
         self.external_slices = {}

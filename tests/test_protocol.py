@@ -5,13 +5,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from PIL import Image
-
-from datasets.OpenFakeProtocol import OpenFakeProtocol
 from protocol_config import GENERATOR_ORDER, MAX_STAGE_ID
 from protocol_manifest import build_protocol_from_records
 from protocol_metrics import StageMetrics, compute_online_metrics
-from utils.onlinesampler import ManifestStageSampler
 
 
 def _make_record(
@@ -177,6 +173,27 @@ class ProtocolTests(unittest.TestCase):
     def test_stage_manifest_contains_all_stages(self) -> None:
         self.assertEqual(sorted(self.protocol.train_by_stage), list(range(MAX_STAGE_ID + 1)))
 
+    def test_openfake_only_protocol_starts_from_openfake(self) -> None:
+        protocol = build_protocol_from_records(
+            _build_toy_records(),
+            seed=7,
+            openfake_only=True,
+        )
+        self.assertEqual(len(protocol.generator_order), len(GENERATOR_ORDER) - 1)
+        self.assertEqual(protocol.generator_order[0]["generator_name"], "Stable Diffusion 1.5")
+        self.assertNotIn("ProGAN", protocol.label_space)
+        self.assertEqual(protocol.external_tests, {})
+
+        records_by_id = {record.record_id: record for record in protocol.records}
+        stage_zero = protocol.train_by_stage[0]
+        self.assertEqual(stage_zero["generators"], ["Stable Diffusion 1.5"])
+        self.assertEqual(stage_zero["fake_count"], stage_zero["real_count"])
+        fake_sources = {
+            records_by_id[record_id].source_dataset
+            for record_id in stage_zero["fake_ids"]
+        }
+        self.assertEqual(fake_sources, {"openfake"})
+
     def test_stage_zero_uses_only_progan_fakes(self) -> None:
         stage_zero = self.protocol.train_by_stage[0]
         self.assertEqual(stage_zero["generators"], ["ProGAN"])
@@ -260,6 +277,13 @@ class ProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["external_accuracy_by_stage"][2], 0.55)
 
     def test_openfake_protocol_dataset_and_sampler(self) -> None:
+        try:
+            from PIL import Image
+            from datasets.OpenFakeProtocol import OpenFakeProtocol
+            from utils.onlinesampler import ManifestStageSampler
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"Optional dataset dependency is not installed: {exc.name}")
+
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             protocol = build_protocol_from_records(_build_toy_records(), seed=7)

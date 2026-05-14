@@ -21,6 +21,11 @@ def main() -> None:
     build_manifest.add_argument("--input", required=True, help="Metadata JSONL file")
     build_manifest.add_argument("--output", required=True, help="Output stage_manifest.json file")
     build_manifest.add_argument("--seed", type=int, default=13)
+    build_manifest.add_argument(
+        "--openfake-only",
+        action="store_true",
+        help="Build a compact OpenFake-only protocol without AIGIBench/ProGAN stages.",
+    )
 
     args = parser.parse_args()
     if args.command == "write-generator-order":
@@ -29,7 +34,11 @@ def main() -> None:
 
     if args.command == "build-manifest":
         records = load_records_jsonl(args.input)
-        protocol = build_protocol_from_records(records, seed=args.seed)
+        protocol = build_protocol_from_records(
+            records,
+            seed=args.seed,
+            openfake_only=args.openfake_only,
+        )
         protocol.write_json(args.output)
         return
 

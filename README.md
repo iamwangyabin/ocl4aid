@@ -74,16 +74,67 @@ Build a stage manifest from metadata:
 python3 -m protocol_cli build-manifest --input metadata.jsonl --output stage_manifest.json
 ```
 
-Train with the vendored FlyGCL entrypoint on the protocol dataset:
+OpenFake is pulled from Hugging Face (`ComplexDataLab/OpenFake`) automatically
+when `--protocol_manifest` is omitted. The dataset is loaded through
+Hugging Face's default download/cache path, and the sampled images, metadata,
+and manifest are cached under the Hugging Face datasets cache by default. No
+project-local `data/` directory needs to be prepared manually.
+
+If you want to control where files live, pass a path explicitly:
+
+- `--openfake_hf_cache_dir /path/to/hf_cache` uses a non-default Hugging Face
+  dataset cache.
+- `--data_dir /path/to/ocl4aid_openfake_cache` stores/uses the auto-prepared
+  OCL4AID images, metadata, and manifest there.
+- `--protocol_manifest /path/to/stage_manifest.json --data_dir /path/to/images`
+  uses a fully prebuilt manifest and image root.
+
+Build a compact OpenFake-only manifest manually only when you want explicit
+control over the cached files:
+
+```bash
+python3 tools/export_openfake_subset.py \
+  --output-dir data/openfake_smoke \
+  --generators "Stable Diffusion 1.5" "Stable Diffusion 2.1"
+
+python3 -m protocol_cli build-manifest \
+  --input data/openfake_smoke/metadata.jsonl \
+  --output data/openfake_smoke/stage_manifest.json \
+  --openfake-only
+```
+
+Train with the vendored FlyGCL entrypoint on the protocol dataset. This command
+auto-prepares OpenFake from Hugging Face using the default cache:
 
 ```bash
 python3 main.py \
   --dataset openfake_protocol \
-  --protocol_manifest stage_manifest.json \
   --method flyprompt \
-  --data_dir /path/to/image/root \
   --note openfake_protocol_run
 ```
+
+Use `--protocol_manifest` and `--data_dir` only if you want to train from a
+prebuilt manifest and image root.
+
+SwanLab tracking is enabled by default for training, evaluation, and protocol
+metrics:
+
+```bash
+python3 main.py \
+  --dataset openfake_protocol \
+  --method flyprompt \
+  --note openfake_protocol_run \
+  --swanlab_project ocl4aid \
+  --swanlab_workspace your_workspace
+```
+
+The SwanLab project defaults to `ocl4aid`. The experiment name defaults to
+`<note_or_method>_<YYYYmmdd_HHMMSS>`, so the example above is recorded like
+`openfake_protocol_run_20260514_153000` unless `--swanlab_experiment_name` is
+provided.
+The SwanLab run logs `train/*`, `test/*`, `task/*`, `summary/*`, and
+`protocol/*` metrics from the main process only. Use `--swanlab_mode local`
+for local-only runs, or `--no_swanlab` to disable tracking.
 
 ## Tests
 

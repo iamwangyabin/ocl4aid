@@ -11,6 +11,31 @@ def base_parser():
     parser.add_argument("--seeds", type=int, nargs="+", default=[1])
     parser.add_argument("--note", type=str, default="", help="Short description of the exp")
     parser.add_argument("--log_path", type=str, default="results", help="The path logs are saved.")
+    parser.add_argument("--use_swanlab", "--swanlab", dest="use_swanlab",
+                        action="store_true", default=True,
+                        help="Enable SwanLab experiment tracking. Enabled by default.")
+    parser.add_argument("--no_swanlab", dest="use_swanlab",
+                        action="store_false",
+                        help="Disable SwanLab experiment tracking.")
+    parser.add_argument("--swanlab_project", type=str, default="ocl4aid",
+                        help="SwanLab project name.")
+    parser.add_argument("--swanlab_workspace", type=str, default=None,
+                        help="SwanLab workspace/organization username. Defaults to personal workspace.")
+    parser.add_argument("--swanlab_experiment_name", type=str, default=None,
+                        help="SwanLab experiment name. Defaults to '<note_or_method>_<YYYYmmdd_HHMMSS>'.")
+    parser.add_argument("--swanlab_description", type=str, default=None,
+                        help="SwanLab experiment description.")
+    parser.add_argument("--swanlab_group", type=str, default=None,
+                        help="SwanLab experiment group.")
+    parser.add_argument("--swanlab_tags", nargs="*", default=None,
+                        help="SwanLab experiment tags.")
+    parser.add_argument("--swanlab_mode", type=str, default="cloud",
+                        choices=["cloud", "local", "offline", "disabled"],
+                        help="SwanLab logging mode.")
+    parser.add_argument("--swanlab_logdir", type=str, default=None,
+                        help="Directory for SwanLab local/offline logs. Defaults to the run log directory.")
+    parser.add_argument("--swanlab_public", action="store_true", default=False,
+                        help="Create the SwanLab project as public when applicable.")
 
     # ============ Model configuration =============
     parser.add_argument("--method", type=str, default="l2p", help="Method name", choices=METHODS.keys())
@@ -18,8 +43,44 @@ def base_parser():
 
     # =========== Dataset configuration ============
     parser.add_argument("--dataset", type=str, default="openfake_protocol", help="dataset name", choices=DATASETS.keys())
-    parser.add_argument("--data_dir", type=str, default="./data", help="Dataset root directory for protocol image paths.")
-    parser.add_argument("--protocol_manifest", type=str, default=None, help="Path to stage_manifest.json for openfake_protocol.")
+    parser.add_argument("--data_dir", type=str, default=None,
+                        help="Dataset root directory for protocol image paths. Auto-set for Hugging Face OpenFake when omitted.")
+    parser.add_argument("--protocol_manifest", type=str, default=None,
+                        help="Path to stage_manifest.json for openfake_protocol. If omitted, OpenFake is prepared from Hugging Face.")
+    parser.add_argument("--auto_openfake_hf", action="store_true", default=True,
+                        help="Automatically prepare OpenFake from Hugging Face when protocol_manifest is omitted.")
+    parser.add_argument("--no_auto_openfake_hf", dest="auto_openfake_hf",
+                        action="store_false",
+                        help="Disable automatic OpenFake Hugging Face preparation.")
+    parser.add_argument("--openfake_hf_dataset_id", type=str, default="ComplexDataLab/OpenFake",
+                        help="Hugging Face dataset id for automatic OpenFake preparation.")
+    parser.add_argument("--openfake_hf_config", type=str, default="core",
+                        help="Hugging Face dataset config for automatic OpenFake preparation.")
+    parser.add_argument("--openfake_hf_split", type=str, default="train",
+                        help="Hugging Face split for automatic OpenFake preparation.")
+    parser.add_argument("--openfake_cache_dir", type=str, default=None,
+                        help="Optional cache dir for auto-prepared OpenFake protocol files. Defaults to Hugging Face datasets cache.")
+    parser.add_argument("--openfake_hf_cache_dir", type=str, default=None,
+                        help="Optional cache_dir passed to Hugging Face load_dataset for non-default dataset cache locations.")
+    parser.add_argument("--openfake_generators", nargs="*", default=None,
+                        help="OpenFake generator names to include when auto-preparing from Hugging Face.")
+    parser.add_argument("--openfake_fake_train_per_generator", type=int, default=8,
+                        help="Fake train samples per generator for automatic OpenFake preparation.")
+    parser.add_argument("--openfake_fake_test_per_generator", type=int, default=2,
+                        help="Fake test samples per generator for automatic OpenFake preparation.")
+    parser.add_argument("--openfake_real_train", type=int, default=32,
+                        help="Real train samples for automatic OpenFake preparation.")
+    parser.add_argument("--openfake_real_test", type=int, default=8,
+                        help="Real test samples for automatic OpenFake preparation.")
+    parser.add_argument("--openfake_hf_streaming", action="store_true", default=False,
+                        help="Stream OpenFake from Hugging Face instead of using the default download/cache path.")
+    parser.add_argument("--no_openfake_hf_streaming", dest="openfake_hf_streaming",
+                        action="store_false",
+                        help="Use Hugging Face's default non-streaming download/cache path.")
+    parser.add_argument("--openfake_force_prepare", action="store_true", default=False,
+                        help="Rebuild the auto-prepared OpenFake cache even if manifest files already exist.")
+    parser.add_argument("--openfake_protocol_seed", type=int, default=13,
+                        help="Protocol split seed for automatic OpenFake preparation.")
     parser.add_argument("--n_tasks", type=int, default=29, help="The number of stages; overridden by the protocol manifest.")
     parser.add_argument("--step_num", type=int, default=-1,
                         help="Number of internal steps for task-free prompt methods; if <=0, defaults to n_tasks.")

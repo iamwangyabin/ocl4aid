@@ -1,8 +1,11 @@
 import datetime
+import atexit
 import json
 import logging
 import os
+from pathlib import Path
 import random
+import re
 import sys
 import time
 import math
@@ -57,6 +60,11 @@ class _Trainer():
         self.current_step = 0
         self.current_step_seen_samples = 0
         self.samples_per_step = None
+        self._swanlab = None
+        self._swanlab_run = None
+        self._swanlab_enabled = False
+        self._swanlab_atexit_registered = False
+        self._swanlab_resolved_experiment_name = None
 
         # Distributed training setup
         self.world_size = 1
@@ -77,6 +85,150 @@ class _Trainer():
         os.makedirs(self.log_dir, exist_ok=True)
 
         return
+
+    def _sanitize_swanlab_value(self, value):
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, (list, tuple)):
+            return [self._sanitize_swanlab_value(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): self._sanitize_swanlab_value(item) for key, item in value.items()}
+        return str(value)
+
+    def _swanlab_config(self):
+        config = {
+            key: self._sanitize_swanlab_value(value)
+            for key, value in sorted(self.kwargs.items())
+        }
+        config.update({
+            "log_dir": self.log_dir,
+            "world_size": self.world_size,
+            "distributed": self.distributed,
+            "swanlab_resolved_project": self.swanlab_project,
+            "swanlab_resolved_experiment_name": self._swanlab_experiment_name(),
+        })
+        return config
+
+    def _swanlab_experiment_name(self):
+        if getattr(self, "swanlab_experiment_name", None):
+            return self.swanlab_experiment_name
+        if self._swanlab_resolved_experiment_name is not None:
+            return self._swanlab_resolved_experiment_name
+        base_name = self.note or self.method or "run"
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._swanlab_resolved_experiment_name = f"{base_name}_{timestamp}"
+        return self._swanlab_resolved_experiment_name
+
+    def _metric_slug(self, value):
+        slug = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(value)).strip("_")
+        return slug or "unknown"
+
+    def _to_swanlab_scalar(self, value):
+        if value is None:
+            return None
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                return None
+            return value.detach().cpu().item()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, (int, float, bool)):
+            return value
+        return None
+
+    def _init_swanlab(self):
+        if not getattr(self, "use_swanlab", False):
+            return
+        if getattr(self, "swanlab_mode", "cloud") == "disabled":
+            return
+        if not self.is_main_process():
+            return
+        try:
+            import swanlab
+        except ModuleNotFoundError:
+            logger.warning(
+                "SwanLab logging requested but package 'swanlab' is not installed. "
+                "Install it or run with --no_swanlab."
+            )
+            return
+
+        init_kwargs = {
+            "project": self.swanlab_project,
+            "experiment_name": self._swanlab_experiment_name(),
+            "description": self.swanlab_description,
+            "group": self.swanlab_group,
+            "tags": self.swanlab_tags,
+            "config": self._swanlab_config(),
+            "logdir": self.swanlab_logdir or os.path.join(self.log_dir, "swanlab"),
+            "mode": self.swanlab_mode,
+            "public": self.swanlab_public,
+        }
+        if getattr(self, "swanlab_workspace", None):
+            init_kwargs["workspace"] = self.swanlab_workspace
+        init_kwargs = {key: value for key, value in init_kwargs.items() if value is not None}
+
+        try:
+            self._swanlab = swanlab
+            try:
+                self._swanlab_run = swanlab.init(**init_kwargs)
+            except TypeError as e:
+                logger.warning(
+                    "SwanLab init rejected optional arguments, retrying with basic arguments: %s",
+                    e,
+                )
+                basic_keys = {"project", "experiment_name", "config", "logdir", "mode", "workspace"}
+                basic_kwargs = {
+                    key: value
+                    for key, value in init_kwargs.items()
+                    if key in basic_keys
+                }
+                self._swanlab_run = swanlab.init(**basic_kwargs)
+            self._swanlab_enabled = True
+            if not self._swanlab_atexit_registered:
+                atexit.register(self._finish_swanlab)
+                self._swanlab_atexit_registered = True
+            logger.info(
+                "SwanLab logging enabled: project=%s experiment=%s mode=%s",
+                init_kwargs.get("project"),
+                init_kwargs.get("experiment_name"),
+                init_kwargs.get("mode"),
+            )
+        except Exception as e:
+            self._swanlab = None
+            self._swanlab_run = None
+            self._swanlab_enabled = False
+            logger.exception("Failed to initialize SwanLab logging: %s", e)
+
+    def _log_swanlab(self, metrics, step=None):
+        if not self._swanlab_enabled or self._swanlab is None:
+            return
+        if not self.is_main_process():
+            return
+        payload = {}
+        for key, value in metrics.items():
+            scalar = self._to_swanlab_scalar(value)
+            if scalar is not None:
+                payload[key] = scalar
+        if not payload:
+            return
+        try:
+            if step is None:
+                self._swanlab.log(payload)
+            else:
+                self._swanlab.log(payload, step=int(step))
+        except Exception as e:
+            self._swanlab_enabled = False
+            logger.exception("SwanLab logging failed and has been disabled: %s", e)
+
+    def _finish_swanlab(self):
+        if not self._swanlab_enabled or self._swanlab is None:
+            return
+        try:
+            self._swanlab.finish()
+        except Exception as e:
+            logger.exception("Failed to finish SwanLab run cleanly: %s", e)
+        finally:
+            self._swanlab_enabled = False
 
     def setup_distributed_dataset(self):
 
@@ -144,7 +296,9 @@ class _Trainer():
 
     def _setup_protocol_dataset(self):
         if not getattr(self, "protocol_manifest", None):
-            raise ValueError("--protocol_manifest is required for dataset=openfake_protocol")
+            self._prepare_openfake_protocol_from_hf()
+        elif getattr(self, "data_dir", None) is None:
+            self.data_dir = str(Path(self.protocol_manifest).resolve().parent)
 
         mean, std, n_classes, inp_size, in_channels = get_statistics(dataset=self.dataset)
         del in_channels
@@ -191,6 +345,7 @@ class _Trainer():
             transform=self.load_transform,
             protocol_manifest=self.protocol_manifest,
         )
+        self.n_classes = len(self.train_dataset.label_space)
         self.online_iter_dataset = OnlineIterDataset(self.train_dataset, 1)
         self.test_dataset = self.datasets[self.dataset](
             root=self.data_dir,
@@ -216,7 +371,10 @@ class _Trainer():
             num_workers=0,
         )
         self.test_sampler = None
-        self.n_tasks = len(self.train_dataset.stage_indices)
+        self.protocol_stage_ids = list(self.train_dataset.active_stage_ids)
+        if not self.protocol_stage_ids:
+            raise ValueError("Protocol manifest has no non-empty training stages.")
+        self.n_tasks = len(self.protocol_stage_ids)
         self.protocol_generator_order = self.train_dataset.generator_order
         if self.method in {"dualprompt", "mvp", "flyprompt"}:
             raw_step_num = self.kwargs.get("step_num", None)
@@ -227,6 +385,38 @@ class _Trainer():
         self.exposed_classes = []
         self.disjoint_classes = []
         self.mask = torch.zeros(self.n_classes, device=self.device) - torch.inf
+
+    def _prepare_openfake_protocol_from_hf(self):
+        if not getattr(self, "auto_openfake_hf", True):
+            raise ValueError(
+                "--protocol_manifest is required when --no_auto_openfake_hf is set."
+            )
+        logger.info(
+            "No protocol_manifest provided; preparing OpenFake from Hugging Face dataset %s.",
+            self.openfake_hf_dataset_id,
+        )
+        from openfake_hf import prepare_openfake_protocol_from_hf
+
+        output_dir = self.openfake_cache_dir or self.data_dir
+        prepared = prepare_openfake_protocol_from_hf(
+            dataset_id=self.openfake_hf_dataset_id,
+            hf_config=self.openfake_hf_config,
+            hf_split=self.openfake_hf_split,
+            output_dir=output_dir,
+            hf_cache_dir=self.openfake_hf_cache_dir,
+            generators=self.openfake_generators,
+            fake_train_per_generator=self.openfake_fake_train_per_generator,
+            fake_test_per_generator=self.openfake_fake_test_per_generator,
+            real_train=self.openfake_real_train,
+            real_test=self.openfake_real_test,
+            seed=self.openfake_protocol_seed,
+            streaming=self.openfake_hf_streaming,
+            force=self.openfake_force_prepare,
+        )
+        self.protocol_manifest = str(prepared["manifest_path"])
+        self.data_dir = str(prepared["data_dir"])
+        logger.info("Using auto-prepared OpenFake manifest: %s", self.protocol_manifest)
+        logger.info("Using auto-prepared OpenFake data dir: %s", self.data_dir)
 
     def setup_distributed_model(self):
 
@@ -319,15 +509,15 @@ class _Trainer():
         report_period = 500
         stage_metrics = []
 
-        for task_id in range(self.n_tasks):
-            stage_name = self.protocol_generator_order[task_id]["generator_name"]
+        for task_pos, stage_id in enumerate(self.protocol_stage_ids):
+            stage_name = self.protocol_generator_order[stage_id]["generator_name"]
             logger.info("\n")
             logger.info("#" * 50)
-            logger.info(f"# Stage {task_id}: {stage_name}")
+            logger.info(f"# Stage {stage_id}: {stage_name}")
             logger.info("#" * 50 + "\n")
 
-            self.train_sampler.set_task(task_id)
-            self.online_before_task(task_id)
+            self.train_sampler.set_task(stage_id)
+            self.online_before_task(task_pos)
             for epoch in range(self.num_epochs):
                 logger.info(f"Epoch {epoch + 1}/{self.num_epochs}")
                 for images, labels, idx in self.train_dataloader:
@@ -339,7 +529,7 @@ class _Trainer():
                     sys.stdout.flush()
 
             if self.is_main_process():
-                stage_metric = self._evaluate_protocol_stage(task_id)
+                stage_metric = self._evaluate_protocol_stage(stage_id)
                 stage_metrics.append(stage_metric)
                 internal_avg = (
                     sum(stage_metric.internal_accuracy_by_generator.values()) / len(stage_metric.internal_accuracy_by_generator)
@@ -351,13 +541,24 @@ class _Trainer():
                 )
                 logger.info(
                     "Protocol Eval | stage %s | avg_internal_acc %.4f | plasticity %.4f | external_avg %.4f",
-                    task_id,
+                    stage_id,
                     internal_avg,
                     stage_metric.internal_accuracy_by_generator.get(stage_name, 0.0),
                     external_avg,
                 )
+                swanlab_metrics = {
+                    "protocol/stage": stage_id,
+                    "protocol/internal_avg_acc": internal_avg,
+                    "protocol/current_generator_acc": stage_metric.internal_accuracy_by_generator.get(stage_name, 0.0),
+                    "protocol/external_avg_acc": external_avg,
+                }
+                for generator_name, score in stage_metric.internal_accuracy_by_generator.items():
+                    swanlab_metrics[f"protocol/internal/{self._metric_slug(generator_name)}"] = score
+                for subset_name, score in stage_metric.external_accuracy_by_subset.items():
+                    swanlab_metrics[f"protocol/external/{self._metric_slug(subset_name)}"] = score
+                self._log_swanlab(swanlab_metrics, step=stage_id)
 
-            self.online_after_task(task_id)
+            self.online_after_task(task_pos)
 
         if self.is_main_process():
             metrics = compute_online_metrics(stage_metrics)
@@ -377,6 +578,16 @@ class _Trainer():
             with open(output_path, "w", encoding="utf-8") as handle:
                 json.dump(summary, handle, indent=2, sort_keys=True)
             logger.info("Saved protocol metrics to %s", output_path)
+            if stage_metrics:
+                last_stage_id = stage_metrics[-1].stage_id
+                final_metrics = {}
+                for key, values_by_stage in metrics.items():
+                    if not isinstance(values_by_stage, dict):
+                        continue
+                    value = values_by_stage.get(last_stage_id)
+                    if isinstance(value, (int, float, np.generic)) and value is not None:
+                        final_metrics[f"protocol/final/{self._metric_slug(key)}"] = value
+                self._log_swanlab(final_metrics, step=last_stage_id)
 
     def _evaluate_protocol_stage(self, stage_id: int) -> StageMetrics:
         self.model.eval()
@@ -385,6 +596,7 @@ class _Trainer():
             for entry in self.protocol_generator_order[: stage_id + 1]
         ]
         current_generator = self.protocol_generator_order[stage_id]["generator_name"]
+        stage_generators = getattr(self.train_dataset, "stage_generators", {}).get(stage_id, [])
         self._prepare_protocol_eval()
 
         internal_scores = {}
@@ -403,7 +615,9 @@ class _Trainer():
             stage_id=stage_id,
             internal_accuracy_by_generator=internal_scores,
             external_accuracy_by_subset=external_scores,
-            new_generators=[current_generator],
+            new_generators=(
+                [current_generator] if current_generator in stage_generators else []
+            ),
         )
 
     def _prepare_protocol_eval(self):
@@ -532,6 +746,7 @@ class _Trainer():
                 'from checkpoints.'
             )
         cudnn.benchmark = False
+        self._init_swanlab()
 
         self.setup_distributed_dataset()
         self.total_samples = len(self.train_dataset)
@@ -542,6 +757,7 @@ class _Trainer():
 
         if self.is_protocol_dataset:
             self._run_protocol_loop()
+            self._finish_swanlab()
             return
 
         # =========== Incrementally training ===========
@@ -613,6 +829,11 @@ class _Trainer():
 
             logger.info("[2-5] Report task result")
             logger.info(task_records['task_acc'])
+            self._log_swanlab({
+                "task/id": task_id,
+                "task/acc": task_acc,
+                "task/avg_loss": eval_dict["avg_loss"],
+            }, step=samples_cnt)
 
         # ================== Summary ===================
         if self.is_main_process():
@@ -658,6 +879,13 @@ class _Trainer():
             logger.info(f"BWT_last {BWT_last}")
             logger.info(f"="*24)
             logger.info(eval_results['test_acc'])
+            self._log_swanlab({
+                "summary/A_auc": A_auc,
+                "summary/A_avg": A_avg,
+                "summary/A_last": A_last,
+                "summary/F_last": F_last,
+                "summary/BWT_last": BWT_last,
+            }, step=samples_cnt)
 
             np.save(f"{self.log_dir}/seed_{self.rnd_seed}.npy", task_records["task_acc"])
 
@@ -678,6 +906,7 @@ class _Trainer():
                         "[Post] analysis_expert_similarity=True but method has no "
                         "analyze_expert_features; skipping expert analysis."
                     )
+        self._finish_swanlab()
 
     def profile_worker(self, gpu) -> None:
         # ============ Toy experiment setup ============
@@ -711,6 +940,7 @@ class _Trainer():
             torch.cuda.manual_seed_all(self.rnd_seed) # if use multi-GPU
             cudnn.deterministic = True
         cudnn.benchmark = False
+        self._init_swanlab()
 
         self.setup_distributed_dataset()
         self.total_samples = len(self.train_dataset)
@@ -727,6 +957,7 @@ class _Trainer():
             self.report_training(samples_cnt, loss, acc)
             break
         self.online_after_task(0)
+        self._finish_swanlab()
 
     def add_new_class(self, class_name):
         exposed_classes = []
@@ -818,11 +1049,22 @@ class _Trainer():
             f"running_time {datetime.timedelta(seconds=int(time.time() - self.start_time))} | "
             f"ETA {datetime.timedelta(seconds=int((time.time() - self.start_time) * (self.total_samples*self.num_epochs-sample_num) / sample_num))}"
         )
+        self._log_swanlab({
+            "train/loss": train_loss,
+            "train/acc": train_acc,
+            "train/lr": self.optimizer.param_groups[0]["lr"],
+            "train/num_classes": len(self.exposed_classes),
+            "time/elapsed_sec": int(time.time() - self.start_time),
+        }, step=sample_num)
 
     def report_test(self, sample_num, avg_loss, avg_acc):
         logger.info(
             f"Test | Sample # {sample_num} | test_loss {avg_loss:.4f} | test_acc {avg_acc:.4f} | "
         )
+        self._log_swanlab({
+            "test/loss": avg_loss,
+            "test/acc": avg_acc,
+        }, step=sample_num)
 
     def _interpret_pred(self, y, pred):
         # xlable is batch
