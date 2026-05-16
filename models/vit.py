@@ -34,11 +34,24 @@ try:
     from timm.models import (adapt_input_conv, build_model_with_cfg,
                              checkpoint_seq, named_apply, register_model,
                              resolve_pretrained_cfg)
+    try:
+        from timm.models import is_model as _timm_is_model
+    except ImportError:
+        from timm.models.registry import is_model as _timm_is_model
 except ImportError:
     from timm.models.helpers import (adapt_input_conv, build_model_with_cfg,
                                      checkpoint_seq, named_apply,
                                      resolve_pretrained_cfg)
-    from timm.models.registry import register_model
+    from timm.models.registry import is_model as _timm_is_model, register_model
+
+_timm_register_model = register_model
+
+
+def register_model(fn):
+    """Keep local ViT constructors available without overwriting timm built-ins."""
+    if _timm_is_model(fn.__name__):
+        return fn
+    return _timm_register_model(fn)
 
 try:
     from timm.layers import DropPath, Mlp, PatchEmbed, lecun_normal_, trunc_normal_
@@ -713,17 +726,40 @@ def checkpoint_filter_fn(state_dict, model, adapt_layer_scale=False):
     return out_dict
 
 
+def _pretrained_cfg_get(pretrained_cfg, key, default=None):
+    if isinstance(pretrained_cfg, dict):
+        return pretrained_cfg.get(key, default)
+    return getattr(pretrained_cfg, key, default)
+
+
+def _pretrained_cfg_set(pretrained_cfg, key, value):
+    if isinstance(pretrained_cfg, dict):
+        pretrained_cfg[key] = value
+    else:
+        setattr(pretrained_cfg, key, value)
+
+
+def _is_npz_path(path):
+    return str(path or '').split('?', 1)[0].endswith('.npz')
+
+
 def _create_vision_transformer(variant, pretrained=False, **kwargs):
     if kwargs.get('features_only', None):
         raise RuntimeError('features_only not implemented for Vision Transformer models.')
 
-    pretrained_cfg = resolve_pretrained_cfg(variant, pretrained_cfg=kwargs.pop('pretrained_cfg', None))
+    pretrained_cfg = kwargs.pop('pretrained_cfg', None)
+    if pretrained_cfg is None and variant in default_cfgs:
+        pretrained_cfg = dict(default_cfgs[variant])
+    pretrained_cfg = resolve_pretrained_cfg(variant, pretrained_cfg=pretrained_cfg)
 
-    # For timm 1.0+, handle custom loading for .npz files
-    # Check if we have a local .npz file in torch cache or ./checkpoints
     if pretrained:
-        import os
         from pathlib import Path
+
+        if (
+            _is_npz_path(_pretrained_cfg_get(pretrained_cfg, 'url'))
+            or _is_npz_path(_pretrained_cfg_get(pretrained_cfg, 'file'))
+        ):
+            _pretrained_cfg_set(pretrained_cfg, 'custom_load', True)
 
         # Common locations for cached .npz files
         # Map variant name to possible filenames (in order of preference)
@@ -758,15 +794,9 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
 
             if npz_path:
                 _logger.info(f'Found local .npz file: {npz_path}')
-                # Set up pretrained_cfg to use custom loading with local file
-                if isinstance(pretrained_cfg, dict):
-                    pretrained_cfg['custom_load'] = True
-                    pretrained_cfg['url'] = str(npz_path)
-                    pretrained_cfg['file'] = str(npz_path)
-                else:
-                    pretrained_cfg.custom_load = True
-                    pretrained_cfg.url = str(npz_path)
-                    pretrained_cfg.file = str(npz_path)
+                _pretrained_cfg_set(pretrained_cfg, 'custom_load', True)
+                _pretrained_cfg_set(pretrained_cfg, 'url', str(npz_path))
+                _pretrained_cfg_set(pretrained_cfg, 'file', str(npz_path))
 
     _logger.info(pretrained_cfg)
 
