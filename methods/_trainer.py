@@ -529,7 +529,20 @@ class _Trainer():
                     sys.stdout.flush()
 
             if self.is_main_process():
-                stage_metric = self._evaluate_protocol_stage(stage_id)
+                external_period = getattr(self, "protocol_external_eval_period", 1)
+                is_last_stage = task_pos == len(self.protocol_stage_ids) - 1
+                evaluate_external = (
+                    is_last_stage
+                    or (
+                        external_period is not None
+                        and external_period > 0
+                        and stage_id % external_period == 0
+                    )
+                )
+                stage_metric = self._evaluate_protocol_stage(
+                    stage_id,
+                    evaluate_external=evaluate_external,
+                )
                 stage_metrics.append(stage_metric)
                 internal_avg = (
                     sum(stage_metric.internal_accuracy_by_generator.values()) / len(stage_metric.internal_accuracy_by_generator)
@@ -589,7 +602,7 @@ class _Trainer():
                         final_metrics[f"protocol/final/{self._metric_slug(key)}"] = value
                 self._log_swanlab(final_metrics, step=last_stage_id)
 
-    def _evaluate_protocol_stage(self, stage_id: int) -> StageMetrics:
+    def _evaluate_protocol_stage(self, stage_id: int, *, evaluate_external: bool = True) -> StageMetrics:
         self.model.eval()
         seen_generators = [
             entry["generator_name"]
@@ -608,8 +621,9 @@ class _Trainer():
             )
 
         external_scores = {}
-        for subset_name, indices in self.test_dataset.external_slices.items():
-            external_scores[subset_name] = self._evaluate_protocol_slice(indices)
+        if evaluate_external:
+            for subset_name, indices in self.test_dataset.external_slices.items():
+                external_scores[subset_name] = self._evaluate_protocol_slice(indices)
 
         return StageMetrics(
             stage_id=stage_id,

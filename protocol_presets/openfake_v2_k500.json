@@ -1,0 +1,13 @@
+{
+  "name": "openfake_v2_k500",
+  "seed": 13,
+  "train_fake_cap_per_model": 500,
+  "train_real_ratio": 1.0,
+  "include_full_validation": true,
+  "include_full_ood_test": true,
+  "include_full_wild_test": true,
+  "image_batch_size": 64,
+  "snapshot_root": "/home/home/yabin/.cache/huggingface/hub/datasets--ComplexDataLab--OpenFake/snapshots/89dc06b251945d31ab1db210c586474601e84ecc",
+  "model_metadata_csv": "/home/home/yabin/openfake_models_release_dates_web_checked.csv",
+  "output_dir": "/home/home/yabin/data/openfake_v2_k500"
+}

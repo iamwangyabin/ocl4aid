@@ -105,6 +105,9 @@ def base_parser():
     # ========== Evaluation configuration ==========
     parser.add_argument("--topk", type=int, default=1, help="set k when we want to set topk accuracy")
     parser.add_argument("--eval_period", type=int, default=100, help="evaluation period for true online setup")
+    parser.add_argument("--protocol_external_eval_period", type=int, default=1,
+                        help="For openfake_protocol, evaluate external OOD/Wild slices every N stages. "
+                             "Use 0 or negative to evaluate external slices only at the final stage.")
 
     # ============= ViT configurations =============
     parser.add_argument('--profile', action='store_true', default=False, help='enable profiling for ViT_Prompt')

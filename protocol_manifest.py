@@ -140,11 +140,21 @@ def load_records_jsonl(path: str | Path) -> list[SourceRecord]:
     return records
 
 
+def load_generator_order_json(path: str | Path) -> list[dict[str, Any]]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("Generator order JSON must contain a list.")
+    return _normalize_generator_order(payload)
+
+
 def build_protocol_from_records(
     source_records: Iterable[SourceRecord | dict[str, Any]],
     *,
     seed: int = DEFAULT_SEED,
     openfake_only: bool = False,
+    generator_order: list[dict[str, Any]] | None = None,
+    include_external_tests: bool | None = None,
+    external_source_datasets: Iterable[str] | None = None,
 ) -> ProtocolArtifacts:
     source = [
         record if isinstance(record, SourceRecord) else SourceRecord.from_dict(record)
@@ -153,7 +163,10 @@ def build_protocol_from_records(
     record_map = {record.record_id: record for record in source}
     _validate_unique_record_ids(source)
 
-    generator_order = _protocol_generator_order(openfake_only=openfake_only)
+    generator_order = _protocol_generator_order(
+        openfake_only=openfake_only,
+        generator_order=generator_order,
+    )
     generator_stage_map = {
         entry["generator_name"]: entry["stage_id"] for entry in generator_order
     }
@@ -204,10 +217,16 @@ def build_protocol_from_records(
         seed=seed,
         generator_stage_map=generator_stage_map,
     )
+    if include_external_tests is None:
+        include_external_tests = not openfake_only
     external_tests = (
-        {}
-        if openfake_only
-        else _build_external_test_slices(record_map, seed=seed)
+        _build_external_test_slices(
+            record_map,
+            seed=seed,
+            external_source_datasets=external_source_datasets,
+        )
+        if include_external_tests
+        else {}
     )
 
     used_test_ids = set()
@@ -263,7 +282,14 @@ def build_protocol_from_records(
     )
 
 
-def _protocol_generator_order(*, openfake_only: bool) -> list[dict[str, Any]]:
+def _protocol_generator_order(
+    *,
+    openfake_only: bool,
+    generator_order: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if generator_order is not None:
+        return _normalize_generator_order(generator_order)
+
     if not openfake_only:
         return [dict(entry) for entry in GENERATOR_ORDER]
 
@@ -279,6 +305,32 @@ def _protocol_generator_order(*, openfake_only: bool) -> list[dict[str, Any]]:
         }
         for stage_id, entry in enumerate(openfake_entries)
     ]
+
+
+def _normalize_generator_order(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for stage_id, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Generator order entry {stage_id} is not an object.")
+        generator_name = entry.get("generator_name")
+        if not generator_name:
+            raise ValueError(f"Generator order entry {stage_id} is missing generator_name.")
+        generator_name = str(generator_name)
+        if generator_name in seen:
+            raise ValueError(f"Duplicate generator_name in generator order: {generator_name}")
+        seen.add(generator_name)
+        normalized.append(
+            {
+                **entry,
+                "stage_id": stage_id,
+                "generator_name": generator_name,
+                "source_dataset": str(entry.get("source_dataset", INTERNAL_DATASET)),
+            }
+        )
+    if not normalized:
+        raise ValueError("Generator order cannot be empty.")
+    return normalized
 
 
 def _validate_unique_record_ids(records: Iterable[SourceRecord]) -> None:
@@ -502,38 +554,49 @@ def _build_external_test_slices(
     record_map: dict[str, SourceRecord],
     *,
     seed: int,
+    external_source_datasets: Iterable[str] | None = None,
 ) -> dict[str, TestSlice]:
-    aigibench_real_pool = sorted(
-        record.record_id
-        for record in record_map.values()
-        if record.source_dataset == EXTERNAL_SOURCE_DATASET
-        and record.split == "test"
-        and record.binary_label == "real"
-    )
-    fake_groups: dict[str, list[str]] = {}
+    external_sources = set(external_source_datasets or [EXTERNAL_SOURCE_DATASET])
+    real_pools: dict[str, list[str]] = {
+        source_dataset: sorted(
+            record.record_id
+            for record in record_map.values()
+            if record.source_dataset == source_dataset
+            and record.split == "test"
+            and record.binary_label == "real"
+        )
+        for source_dataset in external_sources
+    }
+    fake_groups: dict[tuple[str, str], list[str]] = {}
     for record in record_map.values():
         if (
-            record.source_dataset != EXTERNAL_SOURCE_DATASET
+            record.source_dataset not in external_sources
             or record.split != "test"
             or record.binary_label != "fake"
             or record.generator_name in (None, "ProGAN")
         ):
             continue
-        fake_groups.setdefault(record.generator_name, []).append(record.record_id)
+        fake_groups.setdefault((record.source_dataset, record.generator_name), []).append(record.record_id)
 
     external: dict[str, TestSlice] = {}
-    for subset_name, fake_ids in sorted(fake_groups.items()):
+    for (source_dataset, subset_name), fake_ids in sorted(fake_groups.items()):
         fake_ids = sorted(fake_ids)
+        real_pool = real_pools.get(source_dataset, [])
+        slice_name = (
+            subset_name
+            if len(external_sources) == 1
+            else f"{source_dataset}/{subset_name}"
+        )
         real_ids = _sample_real_ids(
-            aigibench_real_pool,
+            real_pool,
             len(fake_ids),
             seed=seed + 3000,
-            key=f"external:{subset_name}",
+            key=f"external:{source_dataset}:{subset_name}",
         )
-        external[subset_name] = TestSlice(
-            name=subset_name,
+        external[slice_name] = TestSlice(
+            name=slice_name,
             fake_generator=subset_name,
-            source_dataset=EXTERNAL_SOURCE_DATASET,
+            source_dataset=source_dataset,
             fake_ids=fake_ids,
             real_ids=real_ids,
         )

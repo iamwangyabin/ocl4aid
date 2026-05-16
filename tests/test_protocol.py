@@ -321,6 +321,112 @@ class ProtocolTests(unittest.TestCase):
             sampler.set_task(1)
             self.assertEqual(len(list(iter(sampler))), len(train_dataset.stage_indices[1]))
 
+    def test_custom_openfake_order_with_ood_and_wild_external_tests(self) -> None:
+        records = []
+        for index in range(8):
+            records.append(
+                _make_record(
+                    f"train_real_{index}",
+                    f"images/train/real_{index}.jpg",
+                    "openfake",
+                    "train",
+                    "real",
+                )
+            )
+        for generator in ("model-a", "model-b"):
+            for index in range(4):
+                records.append(
+                    _make_record(
+                        f"train_fake_{generator}_{index}",
+                        f"images/train/{generator}_{index}.jpg",
+                        "openfake",
+                        "train",
+                        "fake",
+                        generator,
+                    )
+                )
+            for index in range(2):
+                records.append(
+                    _make_record(
+                        f"val_fake_{generator}_{index}",
+                        f"images/validation/{generator}_{index}.jpg",
+                        "openfake",
+                        "test",
+                        "fake",
+                        generator,
+                    )
+                )
+
+        for index in range(4):
+            records.append(
+                _make_record(
+                    f"val_real_{index}",
+                    f"images/validation/real_{index}.jpg",
+                    "openfake",
+                    "test",
+                    "real",
+                )
+            )
+            records.append(
+                _make_record(
+                    f"ood_real_{index}",
+                    f"images/test/real_{index}.jpg",
+                    "openfake_ood",
+                    "test",
+                    "real",
+                )
+            )
+            records.append(
+                _make_record(
+                    f"wild_real_{index}",
+                    f"images/reddit/real_{index}.jpg",
+                    "openfake_wild",
+                    "test",
+                    "real",
+                )
+            )
+
+        for index in range(3):
+            records.append(
+                _make_record(
+                    f"ood_fake_{index}",
+                    f"images/test/ood_{index}.jpg",
+                    "openfake_ood",
+                    "test",
+                    "fake",
+                    "ood-model",
+                )
+            )
+            records.append(
+                _make_record(
+                    f"wild_fake_{index}",
+                    f"images/reddit/fake_{index}.jpg",
+                    "openfake_wild",
+                    "test",
+                    "fake",
+                    "reddit",
+                )
+            )
+
+        protocol = build_protocol_from_records(
+            records,
+            seed=7,
+            openfake_only=True,
+            generator_order=[
+                {"generator_name": "model-a", "source_dataset": "openfake"},
+                {"generator_name": "model-b", "source_dataset": "openfake"},
+            ],
+            include_external_tests=True,
+            external_source_datasets=["openfake_ood", "openfake_wild"],
+        )
+
+        self.assertEqual([entry["generator_name"] for entry in protocol.generator_order], ["model-a", "model-b"])
+        self.assertIn("model-a", protocol.internal_tests)
+        self.assertIn("openfake_ood/ood-model", protocol.external_tests)
+        self.assertIn("openfake_wild/reddit", protocol.external_tests)
+        self.assertEqual(protocol.external_tests["openfake_ood/ood-model"].source_dataset, "openfake_ood")
+        self.assertEqual(protocol.external_tests["openfake_wild/reddit"].source_dataset, "openfake_wild")
+
 
 if __name__ == "__main__":
     unittest.main()

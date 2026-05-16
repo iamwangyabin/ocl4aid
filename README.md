@@ -103,6 +103,59 @@ python3 -m protocol_cli build-manifest \
   --openfake-only
 ```
 
+### OpenFake v2 fixed-size protocol presets
+
+For the current OpenFake v2 release, use the fixed-sampling exporter when the
+full `core/train` split is too large for online continual learning. The exporter
+expects a local Hugging Face snapshot and a model metadata CSV with release dates
+and split counts. It deterministically samples up to `K` fake images per
+training generator, samples the same number of real training images, and exports
+full evaluation splits:
+
+- `core/validation` as in-domain / seen-generator evaluation
+- `core/test` as OOD unseen-generator evaluation
+- `reddit/test` as Wild evaluation
+
+Preset configs are provided under `protocol_presets/`:
+
+- `openfake_v2_k500.json`
+- `openfake_v2_k1000.json`
+- `openfake_v2_k5000.json`
+
+Example on a server that already downloaded `ComplexDataLab/OpenFake`:
+
+```bash
+python3 tools/export_openfake_v2_protocol.py \
+  --config protocol_presets/openfake_v2_k1000.json \
+  --snapshot-root /home/home/yabin/.cache/huggingface/hub/datasets--ComplexDataLab--OpenFake/snapshots/89dc06b251945d31ab1db210c586474601e84ecc \
+  --model-metadata-csv /home/home/yabin/openfake_models_release_dates_web_checked.csv \
+  --output-dir /home/home/yabin/data/openfake_v2_k1000
+```
+
+The command writes:
+
+- `metadata.jsonl`
+- `generator_order.json`
+- `stage_manifest.json`
+- `selection_summary.json`
+- extracted images under `images/`
+
+Train from the exported subset:
+
+```bash
+python3 main.py \
+  --dataset openfake_protocol \
+  --method flyprompt \
+  --protocol_manifest /home/home/yabin/data/openfake_v2_k1000/stage_manifest.json \
+  --data_dir /home/home/yabin/data/openfake_v2_k1000 \
+  --note openfake_v2_k1000 \
+  --protocol_external_eval_period 0
+```
+
+`--protocol_external_eval_period 0` evaluates full OOD/Wild slices only at the
+final stage. Use `1` to evaluate them after every stage, or a larger integer to
+evaluate every N stages.
+
 Train with the vendored FlyGCL entrypoint on the protocol dataset. This command
 auto-prepares OpenFake from Hugging Face using the default cache:
 
