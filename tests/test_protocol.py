@@ -397,6 +397,8 @@ class ProtocolTests(unittest.TestCase):
                     "ood-model",
                 )
             )
+
+        for index in range(6):
             records.append(
                 _make_record(
                     f"wild_fake_{index}",
@@ -426,6 +428,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("openfake_wild/reddit", protocol.external_tests)
         self.assertEqual(protocol.external_tests["openfake_ood/ood-model"].source_dataset, "openfake_ood")
         self.assertEqual(protocol.external_tests["openfake_wild/reddit"].source_dataset, "openfake_wild")
+        self.assertEqual(len(protocol.external_tests["openfake_wild/reddit"].fake_ids), 6)
+        self.assertEqual(len(protocol.external_tests["openfake_wild/reddit"].real_ids), 4)
 
 
 if __name__ == "__main__":

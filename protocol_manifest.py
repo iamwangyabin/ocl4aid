@@ -88,7 +88,7 @@ class TestSlice:
 
     @property
     def balanced_count(self) -> int:
-        return len(self.fake_ids)
+        return min(len(self.fake_ids), len(self.real_ids))
 
 
 @dataclass
@@ -605,6 +605,7 @@ def _build_external_test_slices(
             len(fake_ids),
             seed=seed + 3000,
             key=f"external:{source_dataset}:{subset_name}",
+            allow_insufficient=True,
         )
         external[slice_name] = TestSlice(
             name=slice_name,
@@ -616,11 +617,20 @@ def _build_external_test_slices(
     return external
 
 
-def _sample_real_ids(pool: list[str], count: int, *, seed: int, key: str) -> list[str]:
+def _sample_real_ids(
+    pool: list[str],
+    count: int,
+    *,
+    seed: int,
+    key: str,
+    allow_insufficient: bool = False,
+) -> list[str]:
     if count > len(pool):
-        raise ValueError(
-            f"Not enough real test samples for {key}: need {count}, available {len(pool)}"
-        )
+        if not allow_insufficient:
+            raise ValueError(
+                f"Not enough real test samples for {key}: need {count}, available {len(pool)}"
+            )
+        count = len(pool)
     rng = random.Random(f"{seed}:{key}")
     sampled = rng.sample(pool, count)
     sampled.sort()
