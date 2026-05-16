@@ -318,6 +318,11 @@ class ProtocolTests(unittest.TestCase):
             self.assertIn("R3GAN", test_dataset.external_slices)
 
             sampler = ManifestStageSampler(train_dataset, train_dataset.stage_indices)
+            stage_zero_indices = list(iter(sampler))
+            stage_zero_targets = [train_dataset.targets[index] for index in stage_zero_indices]
+            self.assertNotEqual(stage_zero_indices, train_dataset.stage_indices[0])
+            self.assertEqual(set(stage_zero_targets[:2]), {0, 1})
+
             sampler.set_task(1)
             self.assertEqual(len(list(iter(sampler))), len(train_dataset.stage_indices[1]))
 

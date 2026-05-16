@@ -362,6 +362,7 @@ class _Trainer():
             self.train_dataset.stage_indices,
             _w,
             _r,
+            seed=self.rnd_seed,
         )
         self.train_dataloader = DataLoader(
             self.online_iter_dataset,

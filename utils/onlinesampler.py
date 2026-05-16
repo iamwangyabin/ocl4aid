@@ -421,13 +421,30 @@ class OnlineTestSampler(DistributedSampler):
 
 
 class ManifestStageSampler(DistributedSampler):
-    """Task sampler backed by explicit stage indices from a manifest."""
+    """Task sampler backed by explicit stage indices from a manifest.
 
-    def __init__(self, data_source: Optional[Sized], stage_indices, num_replicas=None, rank=None) -> None:
+    The manifest stores each stage as fake ids followed by real ids. Prompt
+    methods with batch-level class masks need mixed-label batches to get a
+    meaningful cross-entropy signal, so each stage is deterministically
+    interleaved by class while preserving the same sample set.
+    """
+
+    def __init__(
+        self,
+        data_source: Optional[Sized],
+        stage_indices,
+        num_replicas=None,
+        rank=None,
+        seed: int = 0,
+    ) -> None:
         self.data_source = data_source
         self.classes = self.data_source.classes
         self.targets = self.data_source.targets
-        self.indices = {int(stage_id): list(indices) for stage_id, indices in stage_indices.items()}
+        self.seed = int(seed or 0)
+        self.indices = {
+            int(stage_id): self._interleave_stage_indices(int(stage_id), list(indices))
+            for stage_id, indices in stage_indices.items()
+        }
         self.task = 0
         self.disjoint_classes = []
 
@@ -444,6 +461,41 @@ class ManifestStageSampler(DistributedSampler):
         self.num_replicas = num_replicas if num_replicas is not None else 1
         self.rank = rank if rank is not None else 0
         self._update_task_metadata()
+
+    def _interleave_stage_indices(self, stage_id: int, indices: list[int]) -> list[int]:
+        if len(indices) <= 1:
+            return indices
+
+        grouped = {}
+        for index in indices:
+            label = int(self.targets[index])
+            grouped.setdefault(label, []).append(index)
+
+        generator = torch.Generator().manual_seed(self.seed + stage_id)
+        labels = sorted(grouped)
+        label_perm = torch.randperm(len(labels), generator=generator).tolist()
+        labels = [labels[i] for i in label_perm]
+
+        for label in labels:
+            group = grouped[label]
+            perm = torch.randperm(len(group), generator=generator).tolist()
+            grouped[label] = [group[i] for i in perm]
+
+        cursors = {label: 0 for label in labels}
+        ordered = []
+        while len(ordered) < len(indices):
+            progressed = False
+            for label in labels:
+                cursor = cursors[label]
+                group = grouped[label]
+                if cursor >= len(group):
+                    continue
+                ordered.append(group[cursor])
+                cursors[label] = cursor + 1
+                progressed = True
+            if not progressed:
+                break
+        return ordered
 
     def _update_task_metadata(self):
         current = self.indices[self.task]
