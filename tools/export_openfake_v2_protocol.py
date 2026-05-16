@@ -26,6 +26,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -421,6 +422,11 @@ def scan_train_files(
     import pyarrow.parquet as pq
 
     for file_index, path in enumerate(files, start=1):
+        if file_index == 1 or file_index % 10 == 0 or file_index == len(files):
+            print(
+                f"Scanning train metadata: file={file_index}/{len(files)} name={path.name}",
+                flush=True,
+            )
         table = pq.read_table(path, columns=["label", "model", "release_date"])
         labels = table["label"].to_pylist()
         models = table["model"].to_pylist()
@@ -475,6 +481,10 @@ def scan_eval_files(
 
     selected: list[SelectedRow] = []
     for file_index, path in enumerate(files, start=1):
+        print(
+            f"Scanning {subset_name} metadata: file={file_index}/{len(files)} name={path.name}",
+            flush=True,
+        )
         table = pq.read_table(path, columns=["label", "model", "release_date"])
         labels = table["label"].to_pylist()
         models = table["model"].to_pylist()
@@ -607,10 +617,22 @@ def extract_images_and_write_metadata(
         by_file.setdefault(Path(row.parquet_path), {})[row.row_index] = row
 
     written = 0
+    reused = 0
+    started_at = time.monotonic()
+    last_progress = started_at
+    print(
+        f"Starting image extraction: records={len(selected)} parquet_files={len(by_file)}",
+        flush=True,
+    )
     with metadata_path.open("w", encoding="utf-8") as metadata_handle:
         for file_index, (path, rows_by_index) in enumerate(sorted(by_file.items()), start=1):
             parquet = pq.ParquetFile(path)
             selected_indices = sorted(rows_by_index)
+            print(
+                f"Extracting images: file={file_index}/{len(by_file)} "
+                f"name={path.name} selected_rows={len(selected_indices)}",
+                flush=True,
+            )
             offset = 0
             selected_cursor = 0
             for row_group_index in range(parquet.metadata.num_row_groups):
@@ -640,20 +662,37 @@ def extract_images_and_write_metadata(
                     image_payload = images[row_index - row_group_start]
                     output_path = output_dir / row.path
                     output_path.parent.mkdir(parents=True, exist_ok=True)
-                    save_image(image_payload, output_path)
+                    if save_image(image_payload, output_path):
+                        written += 1
+                    else:
+                        reused += 1
                     metadata_handle.write(json.dumps(row.metadata(), ensure_ascii=True) + "\n")
-                    written += 1
+                    processed = written + reused
                     selected_cursor += 1
+                    now = time.monotonic()
+                    if processed % 1000 == 0 or now - last_progress >= 30:
+                        elapsed = max(now - started_at, 1e-6)
+                        rate = processed / elapsed
+                        print(
+                            f"Extracted images: records={processed}/{len(selected)} "
+                            f"written={written} reused={reused} rate={rate:.1f}/s",
+                            flush=True,
+                        )
+                        last_progress = now
                 offset = row_group_end
             if file_index % 25 == 0 or file_index == len(by_file):
                 print(
-                    f"Extracted images: files={file_index}/{len(by_file)} records={written}/{len(selected)}",
+                    f"Extracted images: files={file_index}/{len(by_file)} "
+                    f"records={written + reused}/{len(selected)} written={written} reused={reused}",
                     flush=True,
                 )
 
 
-def save_image(image_payload: Any, output_path: Path) -> None:
+def save_image(image_payload: Any, output_path: Path) -> bool:
     from PIL import Image
+
+    if output_path.exists() and output_path.stat().st_size > 0:
+        return False
 
     image_bytes = None
     if isinstance(image_payload, dict):
@@ -664,8 +703,13 @@ def save_image(image_payload: Any, output_path: Path) -> None:
     if image_bytes is None:
         raise ValueError(f"Image payload does not contain bytes for {output_path}")
 
+    if image_bytes.startswith(b"\xff\xd8"):
+        output_path.write_bytes(image_bytes)
+        return True
+
     with Image.open(BytesIO(image_bytes)) as image:
         image.convert("RGB").save(output_path, format="JPEG", quality=95)
+    return True
 
 
 if __name__ == "__main__":
