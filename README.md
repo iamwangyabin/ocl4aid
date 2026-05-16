@@ -135,7 +135,11 @@ The command writes:
 - `generator_order.json`
 - `stage_manifest.json`
 - `selection_summary.json`
-- extracted images under `images/`
+
+By default this is metadata-only: selected records point back to their parquet
+file and row index, and training reads images lazily from the local Hugging Face
+snapshot. To materialize JPEG files once for repeated experiments, add
+`--materialize-images`; this also writes extracted images under `images/`.
 
 Train from the exported subset:
 

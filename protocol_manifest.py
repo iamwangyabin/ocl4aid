@@ -27,6 +27,9 @@ class SourceRecord:
     generator_name: str | None = None
     subset_name: str | None = None
     release_date: str | None = None
+    parquet_path: str | None = None
+    parquet_row_index: int | None = None
+    parquet_image_column: str | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "SourceRecord":
@@ -43,6 +46,13 @@ class SourceRecord:
             generator_name=payload.get("generator_name"),
             subset_name=payload.get("subset_name"),
             release_date=payload.get("release_date"),
+            parquet_path=payload.get("parquet_path"),
+            parquet_row_index=(
+                int(payload["parquet_row_index"])
+                if payload.get("parquet_row_index") is not None
+                else None
+            ),
+            parquet_image_column=payload.get("parquet_image_column"),
         )
 
 
@@ -59,6 +69,9 @@ class ManifestRecord:
     class_id: int
     generator_id: int
     is_external: bool
+    parquet_path: str | None = None
+    parquet_row_index: int | None = None
+    parquet_image_column: str | None = None
 
 
 @dataclass
@@ -646,4 +659,7 @@ def _to_manifest_record(
         class_id=class_id,
         generator_id=generator_id,
         is_external=is_external,
+        parquet_path=source_record.parquet_path,
+        parquet_row_index=source_record.parquet_row_index,
+        parquet_image_column=source_record.parquet_image_column,
     )

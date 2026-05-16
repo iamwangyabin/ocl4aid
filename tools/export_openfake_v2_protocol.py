@@ -9,8 +9,9 @@ from ``core/train`` and exports full ID/OOD/Wild evaluation splits by default:
 - core/test -> external OOD evaluation
 - reddit/test -> external Wild evaluation
 
-It writes images to disk because the training dataset consumes normal image
-paths through ``stage_manifest.json``.
+By default it writes metadata only and records parquet row pointers for lazy
+image loading during training/evaluation. Use ``--materialize-images`` to extract
+selected images to JPEG files during export.
 """
 
 from __future__ import annotations
@@ -66,6 +67,9 @@ class SelectedRow:
             "split": self.split,
             "binary_label": self.binary_label,
             "subset_name": self.subset_name,
+            "parquet_path": self.parquet_path,
+            "parquet_row_index": self.row_index,
+            "parquet_image_column": "image",
         }
         if self.generator_name is not None:
             payload["generator_name"] = self.generator_name
@@ -86,6 +90,7 @@ def main() -> None:
     seed = int(config.get("seed", 13))
     train_cap = int(config["train_fake_cap_per_model"])
     train_real_ratio = float(config.get("train_real_ratio", 1.0))
+    materialize_images = bool(config.get("materialize_images", False))
 
     model_rows = load_model_rows(metadata_csv)
     train_models = [
@@ -136,7 +141,7 @@ def main() -> None:
     )
     print(
         f"Training models: {len(train_model_names)} | "
-        f"cap/model: {train_cap} | seed: {seed}",
+        f"cap/model: {train_cap} | seed: {seed} | materialize_images={materialize_images}",
         flush=True,
     )
 
@@ -155,12 +160,15 @@ def main() -> None:
     print_summary(summary)
 
     metadata_path = output_dir / "metadata.jsonl"
-    extract_images_and_write_metadata(
-        selected=selected,
-        output_dir=output_dir,
-        metadata_path=metadata_path,
-        batch_size=int(config.get("image_batch_size", 64)),
-    )
+    if materialize_images:
+        extract_images_and_write_metadata(
+            selected=selected,
+            output_dir=output_dir,
+            metadata_path=metadata_path,
+            batch_size=int(config.get("image_batch_size", 64)),
+        )
+    else:
+        write_metadata_only(selected=selected, metadata_path=metadata_path)
 
     records = load_records_jsonl(metadata_path)
     protocol = build_protocol_from_records(
@@ -200,6 +208,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default=None, help="Output directory")
     parser.add_argument("--train-fake-cap-per-model", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--materialize-images",
+        action="store_true",
+        default=None,
+        help="Extract selected parquet images to JPEG files during export.",
+    )
+    parser.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="Only write metadata and manifest; training reads images lazily from parquet.",
+    )
     return parser.parse_args()
 
 
@@ -217,6 +236,10 @@ def apply_overrides(config: dict[str, Any], args: argparse.Namespace) -> dict[st
         merged["train_fake_cap_per_model"] = args.train_fake_cap_per_model
     if args.seed is not None:
         merged["seed"] = args.seed
+    if args.metadata_only:
+        merged["materialize_images"] = False
+    elif args.materialize_images is not None:
+        merged["materialize_images"] = True
 
     if not merged.get("model_metadata_csv"):
         merged["model_metadata_csv"] = str(DEFAULT_MODEL_METADATA_CSV)
@@ -601,6 +624,16 @@ def print_summary(summary: dict[str, Any]) -> None:
             f"fake_models={len(payload['fake_by_model'])}",
             flush=True,
         )
+
+
+def write_metadata_only(*, selected: list[SelectedRow], metadata_path: Path) -> None:
+    print(
+        f"Writing metadata only: records={len(selected)} path={metadata_path}",
+        flush=True,
+    )
+    with metadata_path.open("w", encoding="utf-8") as metadata_handle:
+        for row in selected:
+            metadata_handle.write(json.dumps(row.metadata(), ensure_ascii=True) + "\n")
 
 
 def extract_images_and_write_metadata(

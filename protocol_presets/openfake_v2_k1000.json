@@ -6,6 +6,7 @@
   "include_full_validation": true,
   "include_full_ood_test": true,
   "include_full_wild_test": true,
+  "materialize_images": false,
   "image_batch_size": 64,
   "model_metadata_csv": "openfake_v2_models_release_dates_web_checked.csv",
   "output_dir": "data/openfake_v2_k1000"
