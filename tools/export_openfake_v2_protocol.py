@@ -9,9 +9,8 @@ from ``core/train`` and exports full ID/OOD/Wild evaluation splits by default:
 - core/test -> external OOD evaluation
 - reddit/test -> external Wild evaluation
 
-By default it writes metadata only and records parquet row pointers for lazy
-image loading during training/evaluation. Use ``--materialize-images`` to extract
-selected images to JPEG files during export.
+It writes row-level metadata and a protocol manifest only. Images stay inside
+the OpenFake parquet files and are read directly during training/evaluation.
 """
 
 from __future__ import annotations
@@ -19,7 +18,6 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import dataclass
-from io import BytesIO
 import hashlib
 import heapq
 import json
@@ -27,7 +25,6 @@ import os
 from pathlib import Path
 import re
 import sys
-import time
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -90,7 +87,6 @@ def main() -> None:
     seed = int(config.get("seed", 13))
     train_cap = int(config["train_fake_cap_per_model"])
     train_real_ratio = float(config.get("train_real_ratio", 1.0))
-    materialize_images = bool(config.get("materialize_images", False))
 
     model_rows = load_model_rows(metadata_csv)
     train_models = [
@@ -104,8 +100,6 @@ def main() -> None:
     train_model_set = set(train_model_names)
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    image_root = output_dir / "images"
-    image_root.mkdir(parents=True, exist_ok=True)
 
     generator_order = [
         {
@@ -141,7 +135,7 @@ def main() -> None:
     )
     print(
         f"Training models: {len(train_model_names)} | "
-        f"cap/model: {train_cap} | seed: {seed} | materialize_images={materialize_images}",
+        f"cap/model: {train_cap} | seed: {seed}",
         flush=True,
     )
 
@@ -160,15 +154,7 @@ def main() -> None:
     print_summary(summary)
 
     metadata_path = output_dir / "metadata.jsonl"
-    if materialize_images:
-        extract_images_and_write_metadata(
-            selected=selected,
-            output_dir=output_dir,
-            metadata_path=metadata_path,
-            batch_size=int(config.get("image_batch_size", 64)),
-        )
-    else:
-        write_metadata_only(selected=selected, metadata_path=metadata_path)
+    write_metadata(selected=selected, metadata_path=metadata_path)
 
     records = load_records_jsonl(metadata_path)
     protocol = build_protocol_from_records(
@@ -189,11 +175,11 @@ def main() -> None:
     print(f"Wrote generator order: {generator_order_path}")
     print(f"Wrote manifest: {manifest_path}")
     print(f"Wrote summary: {summary_path}")
-    print(f"Train with: --protocol_manifest {manifest_path} --data_dir {output_dir}")
+    print(f"Train with: --protocol_manifest {manifest_path}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Export a fixed OpenFake v2 protocol subset")
+    parser = argparse.ArgumentParser(description="Build a fixed OpenFake v2 protocol manifest")
     parser.add_argument("--config", required=True, help="Preset JSON file")
     parser.add_argument(
         "--snapshot-root",
@@ -208,17 +194,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default=None, help="Output directory")
     parser.add_argument("--train-fake-cap-per-model", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument(
-        "--materialize-images",
-        action="store_true",
-        default=None,
-        help="Extract selected parquet images to JPEG files during export.",
-    )
-    parser.add_argument(
-        "--metadata-only",
-        action="store_true",
-        help="Only write metadata and manifest; training reads images lazily from parquet.",
-    )
     return parser.parse_args()
 
 
@@ -236,10 +211,6 @@ def apply_overrides(config: dict[str, Any], args: argparse.Namespace) -> dict[st
         merged["train_fake_cap_per_model"] = args.train_fake_cap_per_model
     if args.seed is not None:
         merged["seed"] = args.seed
-    if args.metadata_only:
-        merged["materialize_images"] = False
-    elif args.materialize_images is not None:
-        merged["materialize_images"] = True
 
     if not merged.get("model_metadata_csv"):
         merged["model_metadata_csv"] = str(DEFAULT_MODEL_METADATA_CSV)
@@ -558,12 +529,12 @@ def make_selected_row(
     model_slug = slug(model or "real")
     subset_slug = slug(output_subset)
     record_id = f"{subset_slug}_{binary_label}_{model_slug}_{path.stem}_r{row_index:05d}"
-    image_path = f"images/{subset_slug}/{record_id}.jpg"
+    record_path = f"parquet/{subset_slug}/{path.name}#row={row_index}"
     return SelectedRow(
         record_id=record_id,
         parquet_path=str(path),
         row_index=row_index,
-        path=image_path,
+        path=record_path,
         source_dataset=source_dataset,
         split=manifest_split,
         binary_label=binary_label,
@@ -626,123 +597,14 @@ def print_summary(summary: dict[str, Any]) -> None:
         )
 
 
-def write_metadata_only(*, selected: list[SelectedRow], metadata_path: Path) -> None:
+def write_metadata(*, selected: list[SelectedRow], metadata_path: Path) -> None:
     print(
-        f"Writing metadata only: records={len(selected)} path={metadata_path}",
+        f"Writing metadata: records={len(selected)} path={metadata_path}",
         flush=True,
     )
     with metadata_path.open("w", encoding="utf-8") as metadata_handle:
         for row in selected:
             metadata_handle.write(json.dumps(row.metadata(), ensure_ascii=True) + "\n")
-
-
-def extract_images_and_write_metadata(
-    *,
-    selected: list[SelectedRow],
-    output_dir: Path,
-    metadata_path: Path,
-    batch_size: int,
-) -> None:
-    import pyarrow.parquet as pq
-
-    by_file: dict[Path, dict[int, SelectedRow]] = {}
-    for row in selected:
-        by_file.setdefault(Path(row.parquet_path), {})[row.row_index] = row
-
-    written = 0
-    reused = 0
-    started_at = time.monotonic()
-    last_progress = started_at
-    print(
-        f"Starting image extraction: records={len(selected)} parquet_files={len(by_file)}",
-        flush=True,
-    )
-    with metadata_path.open("w", encoding="utf-8") as metadata_handle:
-        for file_index, (path, rows_by_index) in enumerate(sorted(by_file.items()), start=1):
-            parquet = pq.ParquetFile(path)
-            selected_indices = sorted(rows_by_index)
-            print(
-                f"Extracting images: file={file_index}/{len(by_file)} "
-                f"name={path.name} selected_rows={len(selected_indices)}",
-                flush=True,
-            )
-            offset = 0
-            selected_cursor = 0
-            for row_group_index in range(parquet.metadata.num_row_groups):
-                row_group_rows = parquet.metadata.row_group(row_group_index).num_rows
-                row_group_start = offset
-                row_group_end = offset + row_group_rows
-                while (
-                    selected_cursor < len(selected_indices)
-                    and selected_indices[selected_cursor] < row_group_start
-                ):
-                    selected_cursor += 1
-                if (
-                    selected_cursor >= len(selected_indices)
-                    or selected_indices[selected_cursor] >= row_group_end
-                ):
-                    offset = row_group_end
-                    continue
-
-                table = parquet.read_row_group(row_group_index, columns=["image"])
-                images = table.column(0).to_pylist()
-                while (
-                    selected_cursor < len(selected_indices)
-                    and selected_indices[selected_cursor] < row_group_end
-                ):
-                    row_index = selected_indices[selected_cursor]
-                    row = rows_by_index[row_index]
-                    image_payload = images[row_index - row_group_start]
-                    output_path = output_dir / row.path
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    if save_image(image_payload, output_path):
-                        written += 1
-                    else:
-                        reused += 1
-                    metadata_handle.write(json.dumps(row.metadata(), ensure_ascii=True) + "\n")
-                    processed = written + reused
-                    selected_cursor += 1
-                    now = time.monotonic()
-                    if processed % 1000 == 0 or now - last_progress >= 30:
-                        elapsed = max(now - started_at, 1e-6)
-                        rate = processed / elapsed
-                        print(
-                            f"Extracted images: records={processed}/{len(selected)} "
-                            f"written={written} reused={reused} rate={rate:.1f}/s",
-                            flush=True,
-                        )
-                        last_progress = now
-                offset = row_group_end
-            if file_index % 25 == 0 or file_index == len(by_file):
-                print(
-                    f"Extracted images: files={file_index}/{len(by_file)} "
-                    f"records={written + reused}/{len(selected)} written={written} reused={reused}",
-                    flush=True,
-                )
-
-
-def save_image(image_payload: Any, output_path: Path) -> bool:
-    from PIL import Image
-
-    if output_path.exists() and output_path.stat().st_size > 0:
-        return False
-
-    image_bytes = None
-    if isinstance(image_payload, dict):
-        image_bytes = image_payload.get("bytes")
-    elif isinstance(image_payload, (bytes, bytearray)):
-        image_bytes = image_payload
-
-    if image_bytes is None:
-        raise ValueError(f"Image payload does not contain bytes for {output_path}")
-
-    if image_bytes.startswith(b"\xff\xd8"):
-        output_path.write_bytes(image_bytes)
-        return True
-
-    with Image.open(BytesIO(image_bytes)) as image:
-        image.convert("RGB").save(output_path, format="JPEG", quality=95)
-    return True
 
 
 if __name__ == "__main__":

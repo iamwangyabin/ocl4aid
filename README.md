@@ -59,6 +59,9 @@ Optional fields:
 - `generator_name`
 - `subset_name`
 - `release_date`
+- `parquet_path`
+- `parquet_row_index`
+- `parquet_image_column`
 
 ## CLI
 
@@ -74,20 +77,20 @@ Build a stage manifest from metadata:
 python3 -m protocol_cli build-manifest --input metadata.jsonl --output stage_manifest.json
 ```
 
-OpenFake is pulled from Hugging Face (`ComplexDataLab/OpenFake`) automatically
-when `--protocol_manifest` is omitted. The dataset is loaded through
-Hugging Face's default download/cache path, and the sampled images, metadata,
-and manifest are cached under the Hugging Face datasets cache by default. No
-project-local `data/` directory needs to be prepared manually.
+OpenFake can be pulled from Hugging Face (`ComplexDataLab/OpenFake`)
+automatically when `--protocol_manifest` is omitted. That path is intended for
+small smoke runs. For the full OpenFake v2 protocol, build one of the fixed-size
+manifests below so the sampled rows and continual stages are fixed.
 
 If you want to control where files live, pass a path explicitly:
 
 - `--openfake_hf_cache_dir /path/to/hf_cache` uses a non-default Hugging Face
   dataset cache.
 - `--data_dir /path/to/ocl4aid_openfake_cache` stores/uses the auto-prepared
-  OCL4AID images, metadata, and manifest there.
-- `--protocol_manifest /path/to/stage_manifest.json --data_dir /path/to/images`
-  uses a fully prebuilt manifest and image root.
+  OCL4AID smoke-run files there.
+- `--protocol_manifest /path/to/stage_manifest.json` uses a prebuilt protocol
+  manifest. `--data_dir` is optional when manifest records already contain
+  absolute parquet paths.
 
 Build a compact OpenFake-only manifest manually only when you want explicit
 control over the cached files:
@@ -105,12 +108,12 @@ python3 -m protocol_cli build-manifest \
 
 ### OpenFake v2 fixed-size protocol presets
 
-For the current OpenFake v2 release, use the fixed-sampling exporter when the
-full `core/train` split is too large for online continual learning. The exporter
+For the current OpenFake v2 release, use the fixed-sampling manifest builder when
+the full `core/train` split is too large for online continual learning. It
 uses the model release/count CSV bundled in `protocol_presets/` and automatically
 finds the newest `ComplexDataLab/OpenFake` snapshot from the Hugging Face cache.
-It deterministically samples up to `K` fake images per
-training generator, samples the same number of real training images, and exports
+It deterministically selects up to `K` fake rows per
+training generator, selects the same number of real training rows, and includes
 full evaluation splits:
 
 - `core/validation` as in-domain / seen-generator evaluation
@@ -136,10 +139,9 @@ The command writes:
 - `stage_manifest.json`
 - `selection_summary.json`
 
-By default this is metadata-only: selected records point back to their parquet
-file and row index, and training reads images lazily from the local Hugging Face
-snapshot. To materialize JPEG files once for repeated experiments, add
-`--materialize-images`; this also writes extracted images under `images/`.
+Selected records point back to their parquet file and row index; no images are
+exported or copied. Training reads images directly from the local Hugging Face
+snapshot.
 
 Train from the exported subset:
 
@@ -148,7 +150,6 @@ python3 main.py \
   --dataset openfake_protocol \
   --method flyprompt \
   --protocol_manifest data/openfake_v2_k1000/stage_manifest.json \
-  --data_dir data/openfake_v2_k1000 \
   --note openfake_v2_k1000 \
   --protocol_external_eval_period 0
 ```
@@ -170,8 +171,8 @@ python3 main.py \
   --note openfake_protocol_run
 ```
 
-Use `--protocol_manifest` and `--data_dir` only if you want to train from a
-prebuilt manifest and image root.
+Use `--protocol_manifest` when you want to train from a prebuilt protocol
+manifest.
 
 SwanLab tracking is enabled by default for training, evaluation, and protocol
 metrics:

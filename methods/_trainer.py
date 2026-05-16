@@ -368,7 +368,8 @@ class _Trainer():
             batch_size=self.batchsize,
             sampler=self.train_sampler,
             pin_memory=False,
-            num_workers=0,
+            num_workers=self.n_worker,
+            persistent_workers=self.n_worker > 0,
         )
         self.test_sampler = None
         self.protocol_stage_ids = list(self.train_dataset.active_stage_ids)
