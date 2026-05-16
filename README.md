@@ -107,8 +107,9 @@ python3 -m protocol_cli build-manifest \
 
 For the current OpenFake v2 release, use the fixed-sampling exporter when the
 full `core/train` split is too large for online continual learning. The exporter
-expects a local Hugging Face snapshot and a model metadata CSV with release dates
-and split counts. It deterministically samples up to `K` fake images per
+uses the model release/count CSV bundled in `protocol_presets/` and automatically
+finds the newest `ComplexDataLab/OpenFake` snapshot from the Hugging Face cache.
+It deterministically samples up to `K` fake images per
 training generator, samples the same number of real training images, and exports
 full evaluation splits:
 
@@ -125,11 +126,7 @@ Preset configs are provided under `protocol_presets/`:
 Example on a server that already downloaded `ComplexDataLab/OpenFake`:
 
 ```bash
-python3 tools/export_openfake_v2_protocol.py \
-  --config protocol_presets/openfake_v2_k1000.json \
-  --snapshot-root /home/home/yabin/.cache/huggingface/hub/datasets--ComplexDataLab--OpenFake/snapshots/89dc06b251945d31ab1db210c586474601e84ecc \
-  --model-metadata-csv /home/home/yabin/openfake_models_release_dates_web_checked.csv \
-  --output-dir /home/home/yabin/data/openfake_v2_k1000
+python3 tools/export_openfake_v2_protocol.py --config protocol_presets/openfake_v2_k1000.json
 ```
 
 The command writes:
@@ -146,8 +143,8 @@ Train from the exported subset:
 python3 main.py \
   --dataset openfake_protocol \
   --method flyprompt \
-  --protocol_manifest /home/home/yabin/data/openfake_v2_k1000/stage_manifest.json \
-  --data_dir /home/home/yabin/data/openfake_v2_k1000 \
+  --protocol_manifest data/openfake_v2_k1000/stage_manifest.json \
+  --data_dir data/openfake_v2_k1000 \
   --note openfake_v2_k1000 \
   --protocol_external_eval_period 0
 ```
@@ -155,6 +152,9 @@ python3 main.py \
 `--protocol_external_eval_period 0` evaluates full OOD/Wild slices only at the
 final stage. Use `1` to evaluate them after every stage, or a larger integer to
 evaluate every N stages.
+
+If the Hugging Face cache is not in the default location, pass `--snapshot-root`
+or set `HF_HOME` / `HF_HUB_CACHE`.
 
 Train with the vendored FlyGCL entrypoint on the protocol dataset. This command
 auto-prepares OpenFake from Hugging Face using the default cache:

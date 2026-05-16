@@ -22,6 +22,7 @@ from io import BytesIO
 import hashlib
 import heapq
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -37,6 +38,9 @@ from protocol_manifest import build_protocol_from_records, load_records_jsonl
 INTERNAL_SOURCE = "openfake"
 OOD_SOURCE = "openfake_ood"
 WILD_SOURCE = "openfake_wild"
+DEFAULT_MODEL_METADATA_CSV = (
+    REPO_ROOT / "protocol_presets" / "openfake_v2_models_release_dates_web_checked.csv"
+)
 
 
 @dataclass(frozen=True)
@@ -71,12 +75,13 @@ class SelectedRow:
 
 def main() -> None:
     args = parse_args()
-    config = load_config(args.config)
+    config_path = Path(args.config).expanduser().resolve()
+    config = load_config(config_path)
     config = apply_overrides(config, args)
 
-    snapshot_root = Path(config["snapshot_root"]).expanduser().resolve()
+    snapshot_root = resolve_snapshot_root(config.get("snapshot_root"))
     output_dir = Path(config["output_dir"]).expanduser().resolve()
-    metadata_csv = Path(config["model_metadata_csv"]).expanduser().resolve()
+    metadata_csv = resolve_model_metadata_csv(config.get("model_metadata_csv"), config_path.parent)
     seed = int(config.get("seed", 13))
     train_cap = int(config["train_fake_cap_per_model"])
     train_real_ratio = float(config.get("train_real_ratio", 1.0))
@@ -120,6 +125,9 @@ def main() -> None:
     }
     validate_files(files_by_split)
 
+    print(f"Using snapshot: {snapshot_root}", flush=True)
+    print(f"Using model metadata: {metadata_csv}", flush=True)
+    print(f"Writing output: {output_dir}", flush=True)
     print(
         "Files:",
         {split: len(files) for split, files in files_by_split.items()},
@@ -178,8 +186,16 @@ def main() -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export a fixed OpenFake v2 protocol subset")
     parser.add_argument("--config", required=True, help="Preset JSON file")
-    parser.add_argument("--snapshot-root", default=None, help="Local HF snapshot root")
-    parser.add_argument("--model-metadata-csv", default=None, help="Model release/count CSV")
+    parser.add_argument(
+        "--snapshot-root",
+        default=None,
+        help="Local HF snapshot root. Defaults to the newest ComplexDataLab/OpenFake snapshot in the HF cache.",
+    )
+    parser.add_argument(
+        "--model-metadata-csv",
+        default=None,
+        help="Model release/count CSV. Defaults to the CSV bundled under protocol_presets/.",
+    )
     parser.add_argument("--output-dir", default=None, help="Output directory")
     parser.add_argument("--train-fake-cap-per-model", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -201,11 +217,80 @@ def apply_overrides(config: dict[str, Any], args: argparse.Namespace) -> dict[st
     if args.seed is not None:
         merged["seed"] = args.seed
 
-    required = ["snapshot_root", "model_metadata_csv", "output_dir", "train_fake_cap_per_model"]
+    if not merged.get("model_metadata_csv"):
+        merged["model_metadata_csv"] = str(DEFAULT_MODEL_METADATA_CSV)
+    if not merged.get("output_dir"):
+        preset_name = merged.get("name") or f"openfake_v2_k{merged.get('train_fake_cap_per_model')}"
+        merged["output_dir"] = str(Path("data") / slug(str(preset_name)))
+
+    required = ["output_dir", "train_fake_cap_per_model"]
     missing = [key for key in required if not merged.get(key)]
     if missing:
         raise ValueError(f"Missing required config values: {missing}")
     return merged
+
+
+def resolve_model_metadata_csv(value: str | None, config_dir: Path) -> Path:
+    if not value:
+        return DEFAULT_MODEL_METADATA_CSV
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    config_relative = config_dir / path
+    if config_relative.exists():
+        return config_relative.resolve()
+    repo_relative = REPO_ROOT / path
+    if repo_relative.exists():
+        return repo_relative.resolve()
+    return path.resolve()
+
+
+def resolve_snapshot_root(value: str | None) -> Path:
+    if value:
+        return Path(value).expanduser().resolve()
+    return find_openfake_snapshot()
+
+
+def find_openfake_snapshot() -> Path:
+    candidates: list[Path] = []
+    if os.environ.get("HF_HUB_CACHE"):
+        candidates.append(Path(os.environ["HF_HUB_CACHE"]).expanduser())
+    if os.environ.get("HF_HOME"):
+        candidates.append(Path(os.environ["HF_HOME"]).expanduser() / "hub")
+    candidates.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+    seen: set[Path] = set()
+    snapshots: list[Path] = []
+    for hub_root in candidates:
+        hub_root = hub_root.resolve()
+        if hub_root in seen:
+            continue
+        seen.add(hub_root)
+        snapshot_dir = hub_root / "datasets--ComplexDataLab--OpenFake" / "snapshots"
+        if not snapshot_dir.exists():
+            continue
+        for snapshot in snapshot_dir.iterdir():
+            if snapshot.is_dir() and has_openfake_snapshot_layout(snapshot):
+                snapshots.append(snapshot)
+
+    if not snapshots:
+        searched = ", ".join(str(path) for path in seen)
+        raise FileNotFoundError(
+            "Could not find a local ComplexDataLab/OpenFake snapshot in the Hugging Face cache. "
+            f"Searched: {searched}. Run `hf download ComplexDataLab/OpenFake --repo-type dataset` "
+            "or pass --snapshot-root explicitly."
+        )
+
+    return max(snapshots, key=lambda path: path.stat().st_mtime).resolve()
+
+
+def has_openfake_snapshot_layout(path: Path) -> bool:
+    return (
+        any((path / "core").glob("train-*.parquet"))
+        and any((path / "core").glob("validation-*.parquet"))
+        and any((path / "core").glob("test-*.parquet"))
+        and any((path / "reddit").glob("test-*.parquet"))
+    )
 
 
 def load_model_rows(path: Path) -> list[dict[str, str]]:
@@ -221,7 +306,7 @@ def model_sort_key(row: dict[str, str]) -> tuple[str, str]:
 
 
 def normalize_date(value: str | None) -> str:
-    if not value:
+    if not value or value.strip().lower() in {"unknown", "none", "nan"}:
         return "9999-12-31"
     parts = value.strip().split("-")
     if len(parts) == 1:
