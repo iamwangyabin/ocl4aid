@@ -13,15 +13,14 @@ pillow==11.0.0
 
 # Data manipulation and analysis
 pandas==2.2.3
-datasets==3.6.0
 pyarrow>=15.0.0
+PyYAML>=6.0
 
 # Visualization
 matplotlib==3.9.4
 seaborn==0.13.2
 
 # Experiment tracking and logging
-wandb==0.20.1
 swanlab==0.7.12
 
 # Progress bars and utilities

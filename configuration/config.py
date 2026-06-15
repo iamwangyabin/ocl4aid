@@ -1,11 +1,10 @@
 import argparse
 
-from datasets import DATASETS
 from methods import METHODS
 
 
 def base_parser():
-    parser = argparse.ArgumentParser(description="OpenFake protocol continual fake detection")
+    parser = argparse.ArgumentParser(description="CAIDBenchmark online continual fake detection")
 
     # ========== Experiment configuration ==========
     parser.add_argument("--seeds", type=int, nargs="+", default=[1])
@@ -42,52 +41,20 @@ def base_parser():
     parser.add_argument("--backbone", type=str, default="vit_base_patch16_224", help="Backbone name")
 
     # =========== Dataset configuration ============
-    parser.add_argument("--dataset", type=str, default="openfake_protocol", help="dataset name", choices=DATASETS.keys())
-    parser.add_argument("--data_dir", type=str, default=None,
-                        help="Dataset root directory for protocol image paths. Auto-set for Hugging Face OpenFake when omitted.")
-    parser.add_argument("--protocol_manifest", type=str, default=None,
-                        help="Path to stage_manifest.json for openfake_protocol. If omitted, OpenFake is prepared from Hugging Face.")
-    parser.add_argument("--auto_openfake_hf", action="store_true", default=True,
-                        help="Automatically prepare OpenFake from Hugging Face when protocol_manifest is omitted.")
-    parser.add_argument("--no_auto_openfake_hf", dest="auto_openfake_hf",
-                        action="store_false",
-                        help="Disable automatic OpenFake Hugging Face preparation.")
-    parser.add_argument("--openfake_hf_dataset_id", type=str, default="ComplexDataLab/OpenFake",
-                        help="Hugging Face dataset id for automatic OpenFake preparation.")
-    parser.add_argument("--openfake_hf_config", type=str, default="core",
-                        help="Hugging Face dataset config for automatic OpenFake preparation.")
-    parser.add_argument("--openfake_hf_split", type=str, default="train",
-                        help="Hugging Face split for automatic OpenFake preparation.")
-    parser.add_argument("--openfake_cache_dir", type=str, default=None,
-                        help="Optional cache dir for auto-prepared OpenFake protocol files. Defaults to Hugging Face datasets cache.")
-    parser.add_argument("--openfake_hf_cache_dir", type=str, default=None,
-                        help="Optional cache_dir passed to Hugging Face load_dataset for non-default dataset cache locations.")
-    parser.add_argument("--openfake_generators", nargs="*", default=None,
-                        help="OpenFake generator names to include when auto-preparing from Hugging Face.")
-    parser.add_argument("--openfake_fake_train_per_generator", type=int, default=8,
-                        help="Fake train samples per generator for automatic OpenFake preparation.")
-    parser.add_argument("--openfake_fake_test_per_generator", type=int, default=2,
-                        help="Fake test samples per generator for automatic OpenFake preparation.")
-    parser.add_argument("--openfake_real_train", type=int, default=32,
-                        help="Real train samples for automatic OpenFake preparation.")
-    parser.add_argument("--openfake_real_test", type=int, default=8,
-                        help="Real test samples for automatic OpenFake preparation.")
-    parser.add_argument("--openfake_hf_streaming", action="store_true", default=False,
-                        help="Stream OpenFake from Hugging Face instead of using the default download/cache path.")
-    parser.add_argument("--no_openfake_hf_streaming", dest="openfake_hf_streaming",
-                        action="store_false",
-                        help="Use Hugging Face's default non-streaming download/cache path.")
-    parser.add_argument("--openfake_force_prepare", action="store_true", default=False,
-                        help="Rebuild the auto-prepared OpenFake cache even if manifest files already exist.")
-    parser.add_argument("--openfake_protocol_seed", type=int, default=13,
-                        help="Protocol split seed for automatic OpenFake preparation.")
-    parser.add_argument("--n_tasks", type=int, default=29, help="The number of stages; overridden by the protocol manifest.")
+    parser.add_argument("--caidbench_data_dir", type=str, required=True,
+                        help="Root directory of the CAIDBenchmark Arrow package.")
+    parser.add_argument("--caidbench_protocol", type=str,
+                        default="protocol_presets/caidbench/model_appearance_order_protocol.yaml",
+                        help="CAIDBenchmark continual protocol YAML.")
+    parser.add_argument("--caidbench_index_path", type=str, default=None,
+                        help="Optional CAIDBenchmark index parquet override. Defaults to protocol index_path.")
+    parser.add_argument("--caidbench_label_mode", type=str, default="generator",
+                        choices=["generator", "binary"],
+                        help="Use real+generator classes or binary real/fake labels for training.")
+    parser.add_argument("--caidbench_image_column", type=str, default="image",
+                        help="Image column name in CAIDBenchmark Arrow files.")
     parser.add_argument("--step_num", type=int, default=-1,
                         help="Number of internal steps for task-free prompt methods; if <=0, defaults to n_tasks.")
-
-    parser.add_argument("--n", type=int, default=50, help="Unused for openfake_protocol; kept for method compatibility.")
-    parser.add_argument("--m", type=int, default=10, help="Unused for openfake_protocol; kept for method compatibility.")
-    parser.add_argument("--rnd_NM", action='store_true', default=False, help="Unused for openfake_protocol; kept for method compatibility.")
 
     # =========== Training configuration ===========
     parser.add_argument("--opt_name", type=str, default="sgd", help="Optimizer name")
@@ -99,15 +66,10 @@ def base_parser():
     parser.add_argument("--num_epochs", type=int, default=1, help="number of epoch.")
     parser.add_argument("--online_iter", type=float, default=1, help="number of model updates per samples seen.")
 
-    parser.add_argument("--transforms", nargs="*", default=['cutmix', 'autoaug'], help="Additional train transforms [cutmix, cutout, autoaug]")
+    parser.add_argument("--transforms", nargs="*", default=["autoaug"], help="Additional train transforms [cutout, autoaug]")
     parser.add_argument("--no_batchmask", action="store_true", default=False, help="Disable batch mask, use seen mask")
 
-    # ========== Evaluation configuration ==========
     parser.add_argument("--topk", type=int, default=1, help="set k when we want to set topk accuracy")
-    parser.add_argument("--eval_period", type=int, default=100, help="evaluation period for true online setup")
-    parser.add_argument("--protocol_external_eval_period", type=int, default=1,
-                        help="For openfake_protocol, evaluate external OOD/Wild slices every N stages. "
-                             "Use 0 or negative to evaluate external slices only at the final stage.")
 
     # ============= ViT configurations =============
     parser.add_argument('--profile', action='store_true', default=False, help='enable profiling for ViT_Prompt')
@@ -152,10 +114,6 @@ def base_parser():
     # ========== EMA head bank configurations ==========
     parser.add_argument("--use_ema_head", action="store_true", default=False,
                         help="Use EMA-based classifier head bank and ensemble in compatible methods (e.g., SPrompt, HiDe/NoRGa, DualPrompt, MVP).")
-
-    # ======== Expert similarity analysis ==========
-    parser.add_argument("--analysis_expert_similarity", action="store_true", default=False,
-                        help="If set, run expert feature similarity / CKA (including residual vs common) analysis after training.")
 
     args = parser.parse_args()
     return args

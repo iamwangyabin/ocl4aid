@@ -3,13 +3,10 @@ import atexit
 import json
 import logging
 import os
-from pathlib import Path
 import random
 import re
 import sys
 import time
-import math
-from collections import defaultdict
 
 import numpy as np
 import torch
@@ -20,15 +17,19 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-from datasets import *
+from datasets import CAIDBenchmarkProtocol, OnlineIterDataset
 from protocol_metrics import StageMetrics, compute_online_metrics
 from utils.augment import Cutout
-from utils.data_loader import get_statistics
-from utils.onlinesampler import ManifestStageSampler, OnlineSampler, OnlineTestSampler
+from utils.onlinesampler import ManifestStageSampler
 from utils.train_utils import select_model, select_optimizer, select_scheduler
 
 logger = logging.getLogger()
 mp.set_sharing_strategy('file_system')
+
+DATASET_NAME = "caidbench_protocol"
+CAIDBENCH_MEAN = (0.485, 0.456, 0.406)
+CAIDBENCH_STD = (0.229, 0.224, 0.225)
+CAIDBENCH_INPUT_SIZE = 224
 
 
 class _Trainer():
@@ -38,8 +39,6 @@ class _Trainer():
         self.__dict__.update(kwargs)
 
         self.start_time = time.time()
-        self.eval_period = np.inf if self.eval_period < 0 else self.eval_period
-        self.is_protocol_dataset = getattr(self, "dataset", None) == "openfake_protocol"
 
         # Internal step-based schedule (task-boundary-free) for selected methods.
         method_name = getattr(self, "method", None)
@@ -80,7 +79,7 @@ class _Trainer():
         if self.distributed:
             self.batchsize = self.batchsize // self.world_size
 
-        self.log_dir = f"{self.log_path}/logs/{self.dataset}/{self.note}"
+        self.log_dir = f"{self.log_path}/logs/{DATASET_NAME}/{self.note}"
 
         os.makedirs(self.log_dir, exist_ok=True)
 
@@ -101,6 +100,7 @@ class _Trainer():
             for key, value in sorted(self.kwargs.items())
         }
         config.update({
+            "dataset": DATASET_NAME,
             "log_dir": self.log_dir,
             "world_size": self.world_size,
             "distributed": self.distributed,
@@ -231,85 +231,14 @@ class _Trainer():
             self._swanlab_enabled = False
 
     def setup_distributed_dataset(self):
-
-        self.datasets = DATASETS
-        if self.is_protocol_dataset:
-            self._setup_protocol_dataset()
-            return
-
-        mean, std, n_classes, inp_size, in_channels = get_statistics(dataset=self.dataset)
-        inp_size = 224 # override for ViT
-        self.n_classes = n_classes
+        mean = CAIDBENCH_MEAN
+        std = CAIDBENCH_STD
+        inp_size = CAIDBENCH_INPUT_SIZE
         self.inp_size = inp_size
         self.mean = mean
         self.std = std
 
         train_transform = []
-        self.cutmix = "cutmix" in self.transforms
-        if "cutout" in self.transforms:
-            train_transform.append(Cutout(size=16))
-        if "autoaug" in self.transforms:
-            train_transform.append(transforms.AutoAugment(transforms.AutoAugmentPolicy('imagenet')))
-
-        self.train_transform = transforms.Compose([
-                lambda x: (x * 255).to(torch.uint8),
-                transforms.Resize((inp_size, inp_size)),
-                transforms.RandomCrop(inp_size, padding=4),
-                transforms.RandomHorizontalFlip(),
-                *train_transform,
-                lambda x: x.float() / 255,
-                # transforms.ToTensor(),
-                transforms.Normalize(mean, std),])
-        logger.info(f"Using train-transforms {train_transform}")
-        self.test_transform = transforms.Compose([
-                transforms.Resize((inp_size, inp_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean, std),])
-
-        # Create tensor-compatible test transform for cases where input is already a tensor
-        self.test_transform_tensor = transforms.Compose([
-                transforms.Resize((inp_size, inp_size)),
-                # No ToTensor() since input is already a tensor
-                transforms.Normalize(mean, std),])
-
-        if 'imagenet' in self.dataset or 'cub' in self.dataset or 'car' in self.dataset:
-            self.load_transform = transforms.Compose([
-                transforms.Resize((inp_size, inp_size)),
-                transforms.ToTensor()])
-        else:
-            self.load_transform = transforms.ToTensor()
-
-        self.train_dataset = self.datasets[self.dataset](root=self.data_dir, train=True,  download=True, transform=self.load_transform)
-        self.online_iter_dataset = OnlineIterDataset(self.train_dataset, 1)
-        self.test_dataset = self.datasets[self.dataset](root=self.data_dir, train=False, download=True, transform=self.test_transform)
-
-        _r = dist.get_rank() if self.distributed else None       # means that it is not distributed
-        _w = dist.get_world_size() if self.distributed else None # means that it is not distributed
-        self.train_sampler = OnlineSampler(self.online_iter_dataset, self.n_tasks, self.m, self.n, self.rnd_seed, 0, self.rnd_NM, _w, _r)
-        self.train_dataloader = DataLoader(self.online_iter_dataset, batch_size=self.batchsize, sampler=self.train_sampler, pin_memory=False, num_workers=0)
-        self.test_sampler = OnlineTestSampler(self.test_dataset, [], _w, _r)
-
-        self.seen = 0
-        self.exposed_classes = []
-        self.disjoint_classes = self.train_sampler.disjoint_classes
-        self.mask = torch.zeros(self.n_classes, device=self.device) - torch.inf
-
-    def _setup_protocol_dataset(self):
-        if not getattr(self, "protocol_manifest", None):
-            self._prepare_openfake_protocol_from_hf()
-        elif getattr(self, "data_dir", None) is None:
-            self.data_dir = str(Path(self.protocol_manifest).resolve().parent)
-
-        mean, std, n_classes, inp_size, in_channels = get_statistics(dataset=self.dataset)
-        del in_channels
-        inp_size = 224
-        self.n_classes = n_classes
-        self.inp_size = inp_size
-        self.mean = mean
-        self.std = std
-
-        train_transform = []
-        self.cutmix = "cutmix" in self.transforms
         if "cutout" in self.transforms:
             train_transform.append(Cutout(size=16))
         if "autoaug" in self.transforms:
@@ -338,21 +267,27 @@ class _Trainer():
             transforms.ToTensor(),
         ])
 
-        self.train_dataset = self.datasets[self.dataset](
-            root=self.data_dir,
+        self.train_dataset = CAIDBenchmarkProtocol(
+            root=self.caidbench_data_dir,
             train=True,
             download=False,
             transform=self.load_transform,
-            protocol_manifest=self.protocol_manifest,
+            protocol_path=self.caidbench_protocol,
+            index_path=self.caidbench_index_path,
+            label_mode=self.caidbench_label_mode,
+            image_column=self.caidbench_image_column,
         )
         self.n_classes = len(self.train_dataset.label_space)
-        self.online_iter_dataset = OnlineIterDataset(self.train_dataset, 1)
-        self.test_dataset = self.datasets[self.dataset](
-            root=self.data_dir,
+        self.online_iter_dataset = OnlineIterDataset(self.train_dataset)
+        self.test_dataset = CAIDBenchmarkProtocol(
+            root=self.caidbench_data_dir,
             train=False,
             download=False,
             transform=self.test_transform,
-            protocol_manifest=self.protocol_manifest,
+            protocol_path=self.caidbench_protocol,
+            index_path=self.caidbench_index_path,
+            label_mode=self.caidbench_label_mode,
+            image_column=self.caidbench_image_column,
         )
 
         _r = dist.get_rank() if self.distributed else None
@@ -375,7 +310,7 @@ class _Trainer():
         self.test_sampler = None
         self.protocol_stage_ids = list(self.train_dataset.active_stage_ids)
         if not self.protocol_stage_ids:
-            raise ValueError("Protocol manifest has no non-empty training stages.")
+            raise ValueError("CAIDBenchmark protocol has no non-empty training stages.")
         self.n_tasks = len(self.protocol_stage_ids)
         self.protocol_generator_order = self.train_dataset.generator_order
         if self.method in {"dualprompt", "mvp", "flyprompt"}:
@@ -383,42 +318,8 @@ class _Trainer():
             if raw_step_num is None or raw_step_num <= 0:
                 self.step_num = self.n_tasks
 
-        self.seen = 0
         self.exposed_classes = []
-        self.disjoint_classes = []
         self.mask = torch.zeros(self.n_classes, device=self.device) - torch.inf
-
-    def _prepare_openfake_protocol_from_hf(self):
-        if not getattr(self, "auto_openfake_hf", True):
-            raise ValueError(
-                "--protocol_manifest is required when --no_auto_openfake_hf is set."
-            )
-        logger.info(
-            "No protocol_manifest provided; preparing OpenFake from Hugging Face dataset %s.",
-            self.openfake_hf_dataset_id,
-        )
-        from openfake_hf import prepare_openfake_protocol_from_hf
-
-        output_dir = self.openfake_cache_dir or self.data_dir
-        prepared = prepare_openfake_protocol_from_hf(
-            dataset_id=self.openfake_hf_dataset_id,
-            hf_config=self.openfake_hf_config,
-            hf_split=self.openfake_hf_split,
-            output_dir=output_dir,
-            hf_cache_dir=self.openfake_hf_cache_dir,
-            generators=self.openfake_generators,
-            fake_train_per_generator=self.openfake_fake_train_per_generator,
-            fake_test_per_generator=self.openfake_fake_test_per_generator,
-            real_train=self.openfake_real_train,
-            real_test=self.openfake_real_test,
-            seed=self.openfake_protocol_seed,
-            streaming=self.openfake_hf_streaming,
-            force=self.openfake_force_prepare,
-        )
-        self.protocol_manifest = str(prepared["manifest_path"])
-        self.data_dir = str(prepared["data_dir"])
-        logger.info("Using auto-prepared OpenFake manifest: %s", self.protocol_manifest)
-        logger.info("Using auto-prepared OpenFake data dir: %s", self.data_dir)
 
     def setup_distributed_model(self):
 
@@ -435,7 +336,7 @@ class _Trainer():
             self.model_without_ddp = self.model.module
         self.criterion = getattr(self.model_without_ddp, "loss_fn", nn.CrossEntropyLoss(reduction="mean"))
         self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
-        self.lr_gamma = 0.99995 if 'imagenet' in self.dataset else 0.9999
+        self.lr_gamma = 0.9999
         self.scheduler = select_scheduler(self.sched_name, self.optimizer, self.lr_gamma)
 
         n_params = sum(p.numel() for p in self.model_without_ddp.parameters())
@@ -519,7 +420,7 @@ class _Trainer():
             logger.info("#" * 50 + "\n")
 
             self.train_sampler.set_task(stage_id)
-            self.online_before_task(task_pos)
+            self.online_before_task(stage_id)
             for epoch in range(self.num_epochs):
                 logger.info(f"Epoch {epoch + 1}/{self.num_epochs}")
                 for images, labels, idx in self.train_dataloader:
@@ -531,49 +432,28 @@ class _Trainer():
                     sys.stdout.flush()
 
             if self.is_main_process():
-                external_period = getattr(self, "protocol_external_eval_period", 1)
-                is_last_stage = task_pos == len(self.protocol_stage_ids) - 1
-                evaluate_external = (
-                    is_last_stage
-                    or (
-                        external_period is not None
-                        and external_period > 0
-                        and stage_id % external_period == 0
-                    )
-                )
-                stage_metric = self._evaluate_protocol_stage(
-                    stage_id,
-                    evaluate_external=evaluate_external,
-                )
+                stage_metric = self._evaluate_protocol_stage(stage_id)
                 stage_metrics.append(stage_metric)
                 internal_avg = (
                     sum(stage_metric.internal_accuracy_by_generator.values()) / len(stage_metric.internal_accuracy_by_generator)
                     if stage_metric.internal_accuracy_by_generator else 0.0
                 )
-                external_avg = (
-                    sum(stage_metric.external_accuracy_by_subset.values()) / len(stage_metric.external_accuracy_by_subset)
-                    if stage_metric.external_accuracy_by_subset else 0.0
-                )
                 logger.info(
-                    "Protocol Eval | stage %s | avg_internal_acc %.4f | plasticity %.4f | external_avg %.4f",
+                    "Protocol Eval | stage %s | avg_internal_acc %.4f | plasticity %.4f",
                     stage_id,
                     internal_avg,
                     stage_metric.internal_accuracy_by_generator.get(stage_name, 0.0),
-                    external_avg,
                 )
                 swanlab_metrics = {
                     "protocol/stage": stage_id,
                     "protocol/internal_avg_acc": internal_avg,
                     "protocol/current_generator_acc": stage_metric.internal_accuracy_by_generator.get(stage_name, 0.0),
-                    "protocol/external_avg_acc": external_avg,
                 }
                 for generator_name, score in stage_metric.internal_accuracy_by_generator.items():
                     swanlab_metrics[f"protocol/internal/{self._metric_slug(generator_name)}"] = score
-                for subset_name, score in stage_metric.external_accuracy_by_subset.items():
-                    swanlab_metrics[f"protocol/external/{self._metric_slug(subset_name)}"] = score
                 self._log_swanlab(swanlab_metrics, step=stage_id)
 
-            self.online_after_task(task_pos)
+            self.online_after_task(stage_id)
 
         if self.is_main_process():
             metrics = compute_online_metrics(stage_metrics)
@@ -604,7 +484,7 @@ class _Trainer():
                         final_metrics[f"protocol/final/{self._metric_slug(key)}"] = value
                 self._log_swanlab(final_metrics, step=last_stage_id)
 
-    def _evaluate_protocol_stage(self, stage_id: int, *, evaluate_external: bool = True) -> StageMetrics:
+    def _evaluate_protocol_stage(self, stage_id: int) -> StageMetrics:
         self.model.eval()
         seen_generators = [
             entry["generator_name"]
@@ -622,15 +502,10 @@ class _Trainer():
                 self.test_dataset.internal_slices[generator_name]
             )
 
-        external_scores = {}
-        if evaluate_external:
-            for subset_name, indices in self.test_dataset.external_slices.items():
-                external_scores[subset_name] = self._evaluate_protocol_slice(indices)
-
         return StageMetrics(
             stage_id=stage_id,
             internal_accuracy_by_generator=internal_scores,
-            external_accuracy_by_subset=external_scores,
+            external_accuracy_by_subset={},
             new_generators=(
                 [current_generator] if current_generator in stage_generators else []
             ),
@@ -771,157 +646,7 @@ class _Trainer():
         logger.info(f"[1] Select a GCL method ({self.method})")
         self.setup_distributed_model()
 
-        if self.is_protocol_dataset:
-            self._run_protocol_loop()
-            self._finish_swanlab()
-            return
-
-        # =========== Incrementally training ===========
-        logger.info(f"[2] Incrementally training {self.n_tasks} tasks")
-        task_records = defaultdict(list)
-        eval_results = defaultdict(list)
-        samples_cnt = 0
-
-        num_eval = self.eval_period
-        num_report = 2000
-        report_period = 500
-
-        for task_id in range(self.n_tasks):
-
-            logger.info("\n")
-            logger.info("#" * 50)
-            logger.info(f"# Task {task_id} iteration")
-            logger.info("#" * 50 + "\n")
-            logger.info("[2-1] Prepare a datalist for the current task")
-
-            self.train_sampler.set_task(task_id)
-            self.online_before_task(task_id)
-            for epoch in range(self.num_epochs):
-                logger.info(f"Epoch {epoch+1}/{self.num_epochs}")
-                for i, (images, labels, idx) in enumerate(self.train_dataloader):
-                    samples_cnt += images.size(0) * self.world_size
-
-                    loss, acc = self.online_step(images, labels, idx)
-
-                    if samples_cnt + images.size(0) * self.world_size > num_report:
-                        self.report_training(samples_cnt, loss, acc)
-                        num_report += report_period
-
-                    if samples_cnt + images.size(0) * self.world_size > num_eval:
-                        with torch.no_grad():
-                            test_sampler = OnlineTestSampler(self.test_dataset, self.exposed_classes)
-                            test_dataloader = DataLoader(self.test_dataset, batch_size=self.batchsize*2, sampler=test_sampler, num_workers=self.n_worker)
-                            eval_dict = self.online_evaluate(test_dataloader)
-                            if self.distributed:
-                                eval_dict =  torch.tensor([eval_dict['avg_loss'], eval_dict['avg_acc'], *eval_dict['cls_acc']], device=self.device)
-                                dist.reduce(eval_dict, dst=0, op=dist.ReduceOp.SUM)
-                                eval_dict = eval_dict.cpu().numpy()
-                                eval_dict = {'avg_loss': eval_dict[0]/self.world_size, 'avg_acc': eval_dict[1]/self.world_size, 'cls_acc': eval_dict[2:]/self.world_size}
-                            if self.is_main_process():
-                                eval_results["test_acc"].append(eval_dict['avg_acc'])
-                                eval_results["avg_acc"].append(eval_dict['cls_acc'])
-                                eval_results["data_cnt"].append(num_eval)
-                                self.report_test(num_eval, eval_dict["avg_loss"], eval_dict['avg_acc'])
-                            num_eval += self.eval_period
-
-                    sys.stdout.flush()
-
-                test_sampler = OnlineTestSampler(self.test_dataset, self.exposed_classes)
-                test_dataloader = DataLoader(self.test_dataset, batch_size=self.batchsize*2, sampler=test_sampler, num_workers=self.n_worker)
-                eval_dict = self.online_evaluate(test_dataloader, task_id=task_id, end=True)
-
-            self.online_after_task(task_id)
-
-            if self.distributed:
-                eval_dict =  torch.tensor([eval_dict['avg_loss'], eval_dict['avg_acc'], *eval_dict['cls_acc']], device=self.device)
-                dist.reduce(eval_dict, dst=0, op=dist.ReduceOp.SUM)
-                eval_dict = eval_dict.cpu().numpy()
-                eval_dict = {'avg_loss': eval_dict[0]/self.world_size, 'avg_acc': eval_dict[1]/self.world_size, 'cls_acc': eval_dict[2:]/self.world_size}
-            task_acc = eval_dict['avg_acc']
-
-            logger.info("[2-4] Update the information for the current task")
-            task_records["task_acc"].append(task_acc)
-            task_records["cls_acc"].append(eval_dict["cls_acc"])
-
-            logger.info("[2-5] Report task result")
-            logger.info(task_records['task_acc'])
-            self._log_swanlab({
-                "task/id": task_id,
-                "task/acc": task_acc,
-                "task/avg_loss": eval_dict["avg_loss"],
-            }, step=samples_cnt)
-
-        # ================== Summary ===================
-        if self.is_main_process():
-
-            # Accuracy (A)
-            A_auc = np.mean(eval_results["test_acc"])
-            A_avg = np.mean(task_records["task_acc"])
-            A_last = task_records["task_acc"][self.n_tasks - 1]
-
-            # Forgetting (F)
-            cls_acc = np.array(task_records["cls_acc"])
-            acc_diff = []
-            if self.n_tasks > 1:
-                for j in range(self.n_classes):
-                    if np.max(cls_acc[:-1, j]) > 0:
-                        acc_diff.append(np.max(cls_acc[:-1, j]) - cls_acc[-1, j])
-                F_last = np.mean(acc_diff)
-            else:
-                F_last = -999
-
-            # Backward Transfer (BWT), class-level: last accuracy minus accuracy
-            # when the class was first learned (first non-zero accuracy before last task)
-            if self.n_tasks > 1:
-                bwt_vals = []
-                for j in range(self.n_classes):
-                    per_cls_prev = cls_acc[:-1, j]
-                    seen_indices = np.where(per_cls_prev > 0)[0]
-                    if len(seen_indices) == 0:
-                        continue
-                    first_acc = per_cls_prev[seen_indices[0]]
-                    last_acc = cls_acc[-1, j]
-                    bwt_vals.append(last_acc - first_acc)
-                if len(bwt_vals) > 0:
-                    BWT_last = np.mean(bwt_vals)
-                else:
-                    BWT_last = -999
-            else:
-                BWT_last = -999
-
-            logger.info(f"======== Summary =======")
-            logger.info(self.note)
-            logger.info(f"A_auc {A_auc} | A_avg {A_avg} | A_last {A_last} | F_last {F_last}")
-            logger.info(f"BWT_last {BWT_last}")
-            logger.info(f"="*24)
-            logger.info(eval_results['test_acc'])
-            self._log_swanlab({
-                "summary/A_auc": A_auc,
-                "summary/A_avg": A_avg,
-                "summary/A_last": A_last,
-                "summary/F_last": F_last,
-                "summary/BWT_last": BWT_last,
-            }, step=samples_cnt)
-
-            np.save(f"{self.log_dir}/seed_{self.rnd_seed}.npy", task_records["task_acc"])
-
-            if self.eval_period != np.inf:
-                np.save(f'{self.log_dir}/seed_{self.rnd_seed}_eval.npy', eval_results['test_acc'])
-                np.save(f'{self.log_dir}/seed_{self.rnd_seed}_eval_time.npy', eval_results['data_cnt'])
-
-            # Optional post-hoc expert representation analysis (e.g., FlyPrompt/DualPrompt/MVP).
-            if getattr(self, "analysis_expert_similarity", False):
-                if hasattr(self, "analyze_expert_features"):
-                    logger.info("[Post] Running expert feature similarity / CKA analysis ...")
-                    try:
-                        self.analyze_expert_features()
-                    except Exception as e:
-                        logger.exception("[Post] Expert feature analysis failed: %s", e)
-                else:
-                    logger.info(
-                        "[Post] analysis_expert_similarity=True but method has no "
-                        "analyze_expert_features; skipping expert analysis."
-                    )
+        self._run_protocol_loop()
         self._finish_swanlab()
 
     def profile_worker(self, gpu) -> None:
@@ -993,16 +718,13 @@ class _Trainer():
         if 'reset' in self.sched_name:
             self.update_schedule(reset=True)
 
-    def online_step(self, sample, samples_cnt):
+    def online_step(self, images, labels, idx):
         raise NotImplementedError()
 
     def online_before_task(self, task_id):
         raise NotImplementedError()
 
     def online_after_task(self, task_id):
-        raise NotImplementedError()
-
-    def online_evaluate(self, test_loader, samples_cnt, task_id=None, end=False):
         raise NotImplementedError()
 
     def update_schedule(self, reset=False):
@@ -1073,35 +795,6 @@ class _Trainer():
             "time/elapsed_sec": int(time.time() - self.start_time),
         }, step=sample_num)
 
-    def report_test(self, sample_num, avg_loss, avg_acc):
-        logger.info(
-            f"Test | Sample # {sample_num} | test_loss {avg_loss:.4f} | test_acc {avg_acc:.4f} | "
-        )
-        self._log_swanlab({
-            "test/loss": avg_loss,
-            "test/acc": avg_acc,
-        }, step=sample_num)
-
-    def _interpret_pred(self, y, pred):
-        # xlable is batch
-        ret_num_data = torch.zeros(self.n_classes)
-        ret_corrects = torch.zeros(self.n_classes)
-
-        xlabel_cls, xlabel_cnt = y.unique(return_counts=True)
-        for cls_idx, cnt in zip(xlabel_cls, xlabel_cnt):
-            ret_num_data[cls_idx] = cnt
-
-        correct_xlabel = y.masked_select(y == pred)
-        correct_cls, correct_cnt = correct_xlabel.unique(return_counts=True)
-        for cls_idx, cnt in zip(correct_cls, correct_cnt):
-            ret_corrects[cls_idx] = cnt
-
-        return ret_num_data, ret_corrects
-
-    def reset_opt(self):
-        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
-        self.scheduler = select_scheduler(self.sched_name, self.optimizer, self.lr_gamma)
-
     def all_gather(self, item):
         local_size = torch.tensor(item.size(0), device=self.device)
         all_sizes = [torch.zeros_like(local_size) for _ in range(dist.get_world_size())]
@@ -1129,67 +822,3 @@ class _Trainer():
         for q, size in zip(all_qs_padded, all_sizes):
             all_qs.append(q[:size])
         return all_qs
-
-    def train_data_config(self, n_task, train_dataset, train_sampler):
-        for t_i in range(n_task):
-            train_sampler.set_task(t_i)
-            train_dataloader = DataLoader(train_dataset,batch_size=self.batchsize,sampler=train_sampler,num_workers=4)
-            data_info={}
-            for i,data in enumerate(train_dataloader):
-                _,label = data
-                label = label.to(self.device)
-                for b in range(len(label)):
-                    if 'Class_'+str(label[b].item()) in data_info.keys():
-                        data_info['Class_'+str(label[b].item())] += 1
-                    else:
-                        data_info['Class_'+str(label[b].item())] = 1
-            logger.info(f"[Train] Task{t_i} Data Info")
-            logger.info(data_info)
-            convert_data_info = self.convert_class_label(data_info)
-            np.save(f"{self.log_dir}/seed_{self.rnd_seed}_task{t_i}_train_data.npy", convert_data_info)
-            logger.info(f"[Train] Task{t_i} Converted Data Info")
-            logger.info(convert_data_info)
-            logger.info("")
-
-    def test_data_config(self, test_dataloader, task_id):
-        data_info={}
-        for i,data in enumerate(test_dataloader):
-            _,label = data
-            label = label.to(self.device)
-            for b in range(len(label)):
-                if 'Class_'+str(label[b].item()) in data_info.keys():
-                    data_info['Class_'+str(label[b].item())]+=1
-                else:
-                    data_info['Class_'+str(label[b].item())]=1
-        logger.info("[Test] Exposed Classes:")
-        logger.info(self.exposed_classes)
-        logger.info(f"[Test] Task {task_id} Data Info")
-        logger.info(data_info)
-        logger.info(f"[Test] Task{task_id} Converted Data Info")
-        convert_data_info = self.convert_class_label(data_info)
-        logger.info(convert_data_info)
-        logger.info("")
-
-    def convert_class_label(self,data_info):
-        #* self.class_list => original class label
-        self.class_list = self.train_dataset.classes
-        for key in list(data_info.keys()):
-            old_key= int(key[6:])
-            data_info[self.class_list[old_key]] = data_info.pop(key)
-        return data_info
-
-    def current_task_data(self,train_loader):
-        data_info={}
-        for i,data in enumerate(train_loader):
-            _,label = data
-            for b in range(label.shape[0]):
-                if 'Class_'+str(label[b].item()) in data_info.keys():
-                    data_info['Class_'+str(label[b].item())] +=1
-                else:
-                    data_info['Class_'+str(label[b].item())] =1
-        logger.info("[Current Task] Data Info")
-        logger.info(data_info)
-        logger.info("[Current Task] Converted Data Info")
-        convert_data_info = self.convert_class_label(data_info)
-        logger.info(convert_data_info)
-        logger.info("")

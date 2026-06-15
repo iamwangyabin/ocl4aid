@@ -1,4 +1,3 @@
-import math
 from typing import Optional, Tuple
 
 import torch
@@ -435,4 +434,3 @@ class NoRGaPrefixModel(HiDePrefixModel):
 
     def freeze_act_scale(self) -> None:
         self.backbone.freeze_act_scale()
-

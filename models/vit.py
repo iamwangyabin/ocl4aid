@@ -22,8 +22,6 @@ import logging
 import math
 from collections import OrderedDict
 from functools import partial
-from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

@@ -1,4 +1,3 @@
-import copy
 import gc
 import logging
 
@@ -14,7 +13,6 @@ class RanPAC(_Trainer):
         super(RanPAC, self).__init__(*args, **kwargs)
 
         self.task_id = 0
-        self.first_task_completed = False
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
@@ -113,64 +111,6 @@ class RanPAC(_Trainer):
 
         return logit, loss
 
-    def online_evaluate(self, test_loader, task_id=None, end=False):
-        total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
-        correct_l = torch.zeros(self.n_classes)
-        num_data_l = torch.zeros(self.n_classes)
-        label = []
-
-        if not end and self.task_id > 0:
-            if self.distributed:
-                saved_state = self.model.module.save_classifier_state()
-            else:
-                saved_state = self.model.save_classifier_state()
-
-        if self.task_id > 0 and self.first_task_completed:
-            if self.distributed:
-                self.model.module.update_statistics_and_classifier()
-            else:
-                self.model.update_statistics_and_classifier()
-
-        self.model.eval()
-        with torch.no_grad():
-            for i, data in enumerate(test_loader):
-                x, y = data
-                
-                # Map labels to exposed class indices
-                for j in range(len(y)):
-                    y[j] = self.exposed_classes.index(y[j].item())
-
-                x = x.to(self.device)
-                y = y.to(self.device)
-
-                logit = self.model(x)
-                logit = logit + self.mask
-                loss = self.criterion(logit, y)
-                pred = torch.argmax(logit, dim=-1)
-                _, preds = logit.topk(self.topk, 1, True, True)
-                total_correct += torch.sum(preds == y.unsqueeze(1)).item()
-                total_num_data += y.size(0)
-
-                xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
-                correct_l += correct_xlabel_cnt.detach().cpu()
-                num_data_l += xlabel_cnt.detach().cpu()
-
-                total_loss += loss.item()
-                label += y.tolist()
-
-        if not end and self.task_id > 0:
-            if self.distributed:
-                self.model.module.restore_classifier_state(saved_state)
-            else:
-                self.model.restore_classifier_state(saved_state)
-
-        avg_acc = total_correct / total_num_data
-        avg_loss = total_loss / len(test_loader)
-        cls_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
-
-        eval_dict = {"avg_loss": avg_loss, "avg_acc": avg_acc, "cls_acc": cls_acc}
-        return eval_dict
-
     def online_before_task(self, task_id):
         if task_id == 0:
             if not self.distributed:
@@ -212,7 +152,6 @@ class RanPAC(_Trainer):
                 self.model.module.freeze_all_except_classifier()
                 self.model.module.update_statistics_and_classifier()
 
-            self.first_task_completed = True
             logger.info("Random projection initialized, adapters frozen")
 
         if not self.distributed:

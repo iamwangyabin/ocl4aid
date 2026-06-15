@@ -1,18 +1,12 @@
-# Multi datasets for continual learning
-# All datasets needs to be in the same format.
-# have targets and classes within the dataset.
-
 from torch.utils.data import Dataset
 
 
 class OnlineIterDataset(Dataset):
     def __init__(self,
                  dataset   : Dataset,
-                 iteration : int,
                  ) -> None:
         super().__init__()
         self.dataset = dataset
-        self.iteration = int(iteration)
         self.classes = dataset.classes
         self.targets = dataset.targets
 

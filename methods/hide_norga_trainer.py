@@ -60,7 +60,7 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
         ).to(self.device)
         self.model_without_ddp = self.model
         self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
-        self.lr_gamma = 0.99995 if "imagenet" in self.dataset else 0.9999
+        self.lr_gamma = 0.9999
         self.scheduler = select_scheduler(self.sched_name, self.optimizer, self.lr_gamma)
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
         self.criterion = getattr(
@@ -217,49 +217,6 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
                 task_hat[i] = t
         return task_hat
 
-    def online_evaluate(self, test_loader, task_id=None, end=False):
-        total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
-        correct_l = torch.zeros(self.n_classes)
-        num_data_l = torch.zeros(self.n_classes)
-        self.model.eval()
-
-        # Finalize RPFC gating weights before evaluation
-        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
-        if use_rp_gate and hasattr(self.model_without_ddp, "update"):
-            self.model_without_ddp.update()
-
-        use_ema_head = getattr(self.model_without_ddp, "use_ema_head", False)
-
-        with torch.no_grad():
-            for x, y in test_loader:
-                for j in range(len(y)):
-                    y[j] = self.exposed_classes.index(y[j].item())
-                x = x.to(self.device)
-                y = y.to(self.device)
-                task_hat = self._predict_task_from_gate(x)
-
-                if use_ema_head and hasattr(self.model_without_ddp, "forward_prompt_with_ema"):
-                    logit_ls = self.model_without_ddp.forward_prompt_with_ema(x, task_id=task_hat)
-                    logit_ls = [logit + self.mask for logit in logit_ls]
-                    logit_p = self._ensemble_logits(logit_ls)
-                else:
-                    logit_p, _ = self.model_without_ddp.forward_prompt(x, task_id=task_hat)
-                    logit_p = logit_p + self.mask
-
-                loss = self.criterion(logit_p, y)
-                pred = torch.argmax(logit_p, dim=-1)
-                _, preds = logit_p.topk(self.topk, 1, True, True)
-                total_correct += torch.sum(preds == y.unsqueeze(1)).item()
-                total_num_data += y.size(0)
-                total_loss += loss.item()
-                xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(y, pred)
-                correct_l += correct_xlabel_cnt.detach().cpu()
-                num_data_l += xlabel_cnt.detach().cpu()
-        avg_acc = total_correct / total_num_data if total_num_data > 0 else 0.0
-        avg_loss = total_loss / len(test_loader) if len(test_loader) > 0 else 0.0
-        cls_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
-        return {"avg_loss": avg_loss, "avg_acc": avg_acc, "cls_acc": cls_acc}
-
     def _run_ca_for_branch(self, branch: str) -> None:
         feats, labels = self.model_without_ddp.sample_features_for_ca(
             branch, num_per_class=self.ca_num_per_class, device=self.device
@@ -336,4 +293,3 @@ class NoRGaGCLTrainer(_BaseHiDeNoRGaTrainer):
         if cur_iter == 0:
             self.model_without_ddp.freeze_act_scale()
         super().online_after_task(cur_iter)
-

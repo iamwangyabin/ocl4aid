@@ -1,4 +1,3 @@
-import math
 from typing import Optional, Tuple, Union
 
 import torch
@@ -174,4 +173,3 @@ class HiDeLoRAModel(nn.Module):
         feats = torch.cat(feats, dim=0)
         labels = torch.cat(labels, dim=0)
         return feats, labels
-

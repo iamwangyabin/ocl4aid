@@ -1,18 +1,8 @@
-# import torch_optimizer
-# from easydict import EasyDict as edict
 import timm
 from torch import optim
 
 from models import MODELS
-from optim.fam import FAM
-from optim.sam import SAM
 
-
-def cycle(iterable):
-    # iterate with shuffling
-    while True:
-        for i in iterable:
-            yield i
 
 def select_optimizer(opt_name, lr, model):
 
@@ -21,17 +11,13 @@ def select_optimizer(opt_name, lr, model):
     elif opt_name == 'adam_adapt':
         fc_params = []
         other_params = []
-        fc_params_name = []
-        other_params_name = []
-        
+
         for name, param in model.named_parameters():
             if param.requires_grad:
                 if 'fc.' in name:  # If the parameter is from a fully-connected layer
                     fc_params.append(param)
-                    fc_params_name.append(name)
                 else:  # All other layers
                     other_params.append(param)
-                    other_params_name.append(name)
         opt = optim.Adam([
                         {'params': fc_params, 'lr': lr},       # Learning rate lr1 for fully-connected layers
                         {'params': other_params, 'lr': lr*5}     # Learning rate lr2 for all other layers
@@ -43,29 +29,19 @@ def select_optimizer(opt_name, lr, model):
     elif opt_name == 'sgd_sl':
         fc_params = []
         other_params = []
-        fc_params_name = []
-        other_params_name = []
-        
+
         for name, param in model.named_parameters():
             if param.requires_grad:
                 if 'fc.' in name:  # If the parameter is from a fully-connected layer
                     fc_params.append(param)
-                    fc_params_name.append(name)
                 else:  # All other layers
                     other_params.append(param)
-                    other_params_name.append(name)
         opt = optim.SGD([
                         {'params': other_params, 'lr': lr},       # Learning rate lr1 for fully-connected layers
                         {'params': fc_params, 'lr': 0.005}     # Learning rate lr2 for all other layers
                     ], weight_decay=5e-4)
-    elif opt_name == "sam":
-        base_optimizer = optim.Adam
-        opt = SAM(model.parameters(), base_optimizer, lr=lr, weight_decay=0)
-    elif opt_name == "fam":
-        base_optimizer = optim.Adam
-        opt = FAM(model.parameters(), base_optimizer, lr=lr, weight_decay=0)
     else:
-        raise NotImplementedError("Please select the opt_name [adam, sgd]")
+        raise NotImplementedError("Please select the opt_name [adam, adam_adapt, sgd, sgd_sl]")
     return opt
 
 def select_scheduler(sched_name, opt, hparam=None):

@@ -1,14 +1,10 @@
 import gc
-import logging
 from typing import Dict, List
 
-import numpy as np
 import torch
 from sklearn.cluster import KMeans
 
 from methods._trainer import _Trainer
-
-logger = logging.getLogger()
 
 
 class SPrompt(_Trainer):
@@ -16,7 +12,6 @@ class SPrompt(_Trainer):
         super(SPrompt, self).__init__(*args, **kwargs)
 
         self.task_id = 0
-        self.label_to_task: Dict[int, int] = {}
 
         # per-task prototypes: task_id -> torch.Tensor[K, D] (CPU)
         self.task_prototypes: Dict[int, torch.Tensor] = {}
@@ -217,78 +212,6 @@ class SPrompt(_Trainer):
         self._cur_task_features = []
         gc.collect()
 
-    # ----------------------------- evaluation ------------------------------
-    @torch.no_grad()
-    def online_evaluate(self, test_loader, task_id=None, end=False):
-        logger.info("Start evaluation...")
-
-        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
-        use_ema_head = getattr(self.model_without_ddp, "use_ema_head", False)
-
-        # If RPFC gating is enabled, update RPFC weights before evaluation.
-        if use_rp_gate and hasattr(self.model_without_ddp, "update"):
-            self.model_without_ddp.update()
-
-        # If we are currently training a task and not using RPFC gating,
-        # rebuild its prototypes from the up-to-date feature buffer.
-        if (not use_rp_gate) and len(self._cur_task_features) > 0:
-            self._build_prototypes_for_task(self.task_id)
-
-        total_correct, total_num_data, total_loss = 0.0, 0.0, 0.0
-        correct_l = torch.zeros(self.n_classes)
-        num_data_l = torch.zeros(self.n_classes)
-
-        self.model.eval()
-        with torch.no_grad():
-            for images, labels in test_loader:
-                # map ground-truth labels to indices in exposed_classes
-                for j in range(len(labels)):
-                    labels[j] = self.exposed_classes.index(labels[j].item())
-
-                images = images.to(self.device)
-                labels = labels.to(self.device)
-
-                if use_rp_gate:
-                    # Use RPFC head to predict task ids from CLS features
-                    with torch.cuda.amp.autocast(enabled=self.use_amp):
-                        logit_task = self.model_without_ddp.forward_with_rp(images)
-                    # Only consider tasks that have been seen so far
-                    E = self.task_id + 1
-                    logit_task = logit_task[:, :E]
-                    expert_ids = torch.argmax(logit_task, dim=-1)
-                else:
-                    # route each sample to a task via prototypes, then call model with prompts
-                    expert_ids = self._route_batch_by_prototypes(images)
-
-                with torch.cuda.amp.autocast(enabled=self.use_amp):
-                    if use_ema_head:
-                        # Use EMA head bank (online + EMA heads) and ensemble
-                        logit_ls = self.model_without_ddp.forward_with_ema(images, expert_ids=expert_ids)
-                        logit_ls = [logit + self.mask for logit in logit_ls]
-                        logit = self._ensemble_logits(logit_ls)
-                    else:
-                        logit = self.model(images, expert_ids=expert_ids)
-                        logit = logit + self.mask
-
-                    loss = self.criterion(logit, labels)
-
-                pred = torch.argmax(logit, dim=-1)
-                _, preds = logit.topk(self.topk, 1, True, True)
-                total_correct += torch.sum(preds == labels.unsqueeze(1)).item()
-                total_num_data += labels.size(0)
-
-                xlabel_cnt, correct_xlabel_cnt = self._interpret_pred(labels, pred)
-                correct_l += correct_xlabel_cnt.detach().cpu()
-                num_data_l += xlabel_cnt.detach().cpu()
-                total_loss += loss.item()
-
-        avg_acc = total_correct / total_num_data
-        avg_loss = total_loss / len(test_loader)
-        cls_acc = (correct_l / (num_data_l + 1e-5)).numpy().tolist()
-
-        eval_dict = {"avg_loss": avg_loss, "avg_acc": avg_acc, "cls_acc": cls_acc}
-        return eval_dict
-
     def _ensemble_logits(self, logit_ls):
         """Ensemble a list of logits from online and EMA heads.
 
@@ -314,4 +237,3 @@ class SPrompt(_Trainer):
             return logit_stack[batch_indices, :, min_entropy_indices]
         else:
             raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
-
