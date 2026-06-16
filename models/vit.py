@@ -750,6 +750,7 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
         pretrained_cfg = dict(default_cfgs[variant])
     pretrained_cfg = resolve_pretrained_cfg(variant, pretrained_cfg=pretrained_cfg)
 
+    pretrained_custom_load = False
     if pretrained:
         from pathlib import Path
 
@@ -758,6 +759,7 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
             or _is_npz_path(_pretrained_cfg_get(pretrained_cfg, 'file'))
         ):
             _pretrained_cfg_set(pretrained_cfg, 'custom_load', True)
+            pretrained_custom_load = True
 
         # Common locations for cached .npz files
         # Map variant name to possible filenames (in order of preference)
@@ -793,6 +795,7 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
             if npz_path:
                 _logger.info(f'Found local .npz file: {npz_path}')
                 _pretrained_cfg_set(pretrained_cfg, 'custom_load', True)
+                pretrained_custom_load = True
                 _pretrained_cfg_set(pretrained_cfg, 'url', str(npz_path))
                 _pretrained_cfg_set(pretrained_cfg, 'file', str(npz_path))
 
@@ -802,6 +805,7 @@ def _create_vision_transformer(variant, pretrained=False, **kwargs):
         VisionTransformer, variant, pretrained,
         pretrained_cfg=pretrained_cfg,
         pretrained_filter_fn=checkpoint_filter_fn,
+        pretrained_custom_load=pretrained_custom_load,
         **kwargs)
     return model
 
