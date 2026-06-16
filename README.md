@@ -75,11 +75,13 @@ python3 main.py \
 Metrics are written under:
 
 ```text
-results/logs/caidbench_protocol/<note>/
+run_logs/<note>/
 ```
 
 The main output is `seed_<seed>_ocl_metrics.json`, containing per-stage
-accuracy, average accuracy, forgetting, and plasticity.
+accuracy, average accuracy, forgetting, and plasticity. After the first active
+stage completes, `seed_<seed>_after_base_task.pt` is saved in the same run
+directory for reuse.
 
 ## Tests
 

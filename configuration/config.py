@@ -9,7 +9,7 @@ def base_parser():
     # ========== Experiment configuration ==========
     parser.add_argument("--seeds", type=int, nargs="+", default=[1])
     parser.add_argument("--note", type=str, default="", help="Short description of the exp")
-    parser.add_argument("--log_path", type=str, default="results", help="The path logs are saved.")
+    parser.add_argument("--log_path", type=str, default="run_logs", help="Root directory for run logs and outputs.")
     parser.add_argument("--use_swanlab", "--swanlab", dest="use_swanlab",
                         action="store_true", default=True,
                         help="Enable SwanLab experiment tracking. Enabled by default.")

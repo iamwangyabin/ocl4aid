@@ -89,7 +89,8 @@ class _Trainer():
             if self.base_batchsize is not None:
                 self.base_batchsize = max(1, self.base_batchsize // self.world_size)
 
-        self.log_dir = f"{self.log_path}/logs/{DATASET_NAME}/{self.note}"
+        run_name = self.note or self.method or "run"
+        self.log_dir = os.path.join(self.log_path, run_name)
 
         os.makedirs(self.log_dir, exist_ok=True)
 
@@ -479,6 +480,8 @@ class _Trainer():
                 self._log_swanlab(swanlab_metrics, step=stage_id)
 
             self.online_after_task(stage_id)
+            if task_pos == 0:
+                self._save_base_checkpoint(stage_id)
 
         if self.is_main_process():
             metrics = compute_online_metrics(stage_metrics)
@@ -519,6 +522,50 @@ class _Trainer():
         base_stage_id = self.protocol_stage_ids[0]
         base_count = len(stage_indices.get(base_stage_id, []))
         return total + max(self.base_epochs - 1, 0) * base_count
+
+    def _move_checkpoint_state_to_cpu(self, value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().cpu()
+        if isinstance(value, dict):
+            return {key: self._move_checkpoint_state_to_cpu(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._move_checkpoint_state_to_cpu(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(self._move_checkpoint_state_to_cpu(item) for item in value)
+        return value
+
+    def _save_base_checkpoint(self, stage_id: int):
+        if not self.is_main_process():
+            return
+
+        checkpoint_path = os.path.join(self.log_dir, f"seed_{self.rnd_seed}_after_base_task.pt")
+        model_state = self._move_checkpoint_state_to_cpu(self.model_without_ddp.state_dict())
+        optimizer_state = self._move_checkpoint_state_to_cpu(self.optimizer.state_dict())
+        scaler_state = self._move_checkpoint_state_to_cpu(self.scaler.state_dict())
+
+        payload = {
+            "stage_id": int(stage_id),
+            "seed": self.rnd_seed,
+            "method": self.method,
+            "backbone": self.backbone,
+            "n_classes": self.n_classes,
+            "n_tasks": self.n_tasks,
+            "exposed_classes": list(self.exposed_classes),
+            "mask": self.mask.detach().cpu(),
+            "model_state": model_state,
+            "optimizer_state": optimizer_state,
+            "scheduler_state": self.scheduler.state_dict(),
+            "scaler_state": scaler_state,
+            "current_step": getattr(self, "current_step", None),
+            "current_step_seen_samples": getattr(self, "current_step_seen_samples", None),
+            "samples_per_step": getattr(self, "samples_per_step", None),
+            "base_epochs": self.base_epochs,
+            "batchsize": self.batchsize,
+            "base_batchsize": self.base_batchsize,
+            "config": self._swanlab_config(),
+        }
+        torch.save(payload, checkpoint_path)
+        logger.info("Saved base checkpoint to %s", checkpoint_path)
 
     def _evaluate_protocol_stage(self, stage_id: int) -> StageMetrics:
         self.model.eval()
