@@ -63,7 +63,8 @@ def base_parser():
     parser.add_argument("--n_worker", type=int, default=0, help="The number of workers")
     parser.add_argument("--batchsize", type=int, default=16, help="batch size")
     parser.add_argument("--lr", type=float, default=0.05, help="learning rate")
-    parser.add_argument("--num_epochs", type=int, default=1, help="number of epoch.")
+    parser.add_argument("--base_epochs", type=int, default=1,
+                        help="Number of epochs for the base session only. Online stages are single-pass.")
     parser.add_argument("--online_iter", type=float, default=1, help="number of model updates per samples seen.")
 
     parser.add_argument("--transforms", nargs="*", default=["autoaug"], help="Additional train transforms [cutout, autoaug]")

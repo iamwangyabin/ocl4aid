@@ -39,6 +39,9 @@ class _Trainer():
         self.__dict__.update(kwargs)
 
         self.start_time = time.time()
+        self.base_epochs = int(getattr(self, "base_epochs", 1))
+        if self.base_epochs < 1:
+            raise ValueError(f"base_epochs must be >= 1, got {self.base_epochs}")
 
         # Internal step-based schedule (task-boundary-free) for selected methods.
         method_name = getattr(self, "method", None)
@@ -358,25 +361,25 @@ class _Trainer():
                 self.main_worker(0)
 
     def _init_internal_step_scheduler(self):
-        """Initialize internal step schedule based on training set size.
+        """Initialize internal step schedule based on dataloader-observed samples.
 
         The step schedule is intentionally decoupled from benchmark tasks:
         step boundaries are determined only by how many training samples have
-        been seen in total.
+        been seen in total, including repeated base-session passes.
         """
         if getattr(self, "step_num", None) is None:
             return
         if self.step_num <= 1:
             # Already validated in __init__, but guard for safety.
             raise ValueError(f"step_num must be > 1, got {self.step_num}")
-        if not hasattr(self, "total_samples"):
-            return
-        if self.total_samples <= 0:
+
+        schedule_total = int(getattr(self, "total_training_samples", getattr(self, "total_samples", 0)))
+        if schedule_total <= 0:
             return
 
-        # Use training set size to determine how many samples belong to each
-        # internal step (approximate, sampler may re-order samples).
-        self.samples_per_step = max(1, self.total_samples // self.step_num)
+        # Use the actual number of dataloader-observed samples so base_epochs > 1
+        # does not advance internal prompt steps too early.
+        self.samples_per_step = max(1, schedule_total // self.step_num)
         self.current_step = 0
         self.current_step_seen_samples = 0
 
@@ -421,8 +424,13 @@ class _Trainer():
 
             self.train_sampler.set_task(stage_id)
             self.online_before_task(stage_id)
-            for epoch in range(self.num_epochs):
-                logger.info(f"Epoch {epoch + 1}/{self.num_epochs}")
+            stage_epochs = self.base_epochs if task_pos == 0 else 1
+            if task_pos == 0:
+                logger.info(f"Base session epochs: {stage_epochs}")
+            else:
+                logger.info("Online stage: single pass")
+            for epoch in range(stage_epochs):
+                logger.info(f"Pass {epoch + 1}/{stage_epochs}")
                 for images, labels, idx in self.train_dataloader:
                     samples_cnt += images.size(0) * self.world_size
                     loss, acc = self.online_step(images, labels, idx)
@@ -483,6 +491,17 @@ class _Trainer():
                     if isinstance(value, (int, float, np.generic)) and value is not None:
                         final_metrics[f"protocol/final/{self._metric_slug(key)}"] = value
                 self._log_swanlab(final_metrics, step=last_stage_id)
+
+    def _expected_training_samples(self):
+        if not hasattr(self, "train_dataset") or not hasattr(self, "protocol_stage_ids"):
+            return getattr(self, "total_samples", 0)
+        stage_indices = getattr(self.train_dataset, "stage_indices", {})
+        total = sum(len(indices) for indices in stage_indices.values())
+        if not self.protocol_stage_ids:
+            return total
+        base_stage_id = self.protocol_stage_ids[0]
+        base_count = len(stage_indices.get(base_stage_id, []))
+        return total + max(self.base_epochs - 1, 0) * base_count
 
     def _evaluate_protocol_stage(self, stage_id: int) -> StageMetrics:
         self.model.eval()
@@ -641,6 +660,7 @@ class _Trainer():
 
         self.setup_distributed_dataset()
         self.total_samples = len(self.train_dataset)
+        self.total_training_samples = self._expected_training_samples()
         self._init_internal_step_scheduler()
 
         logger.info(f"[1] Select a GCL method ({self.method})")
@@ -685,6 +705,7 @@ class _Trainer():
 
         self.setup_distributed_dataset()
         self.total_samples = len(self.train_dataset)
+        self.total_training_samples = self._expected_training_samples()
         self._init_internal_step_scheduler()
 
         self.setup_distributed_model()
@@ -780,12 +801,17 @@ class _Trainer():
             h.addFilter(MasterOnlyFilter(is_master))
 
     def report_training(self, sample_num, train_loss, train_acc):
+        fallback_total = getattr(self, "total_samples", sample_num)
+        total_training_samples = max(int(getattr(self, "total_training_samples", fallback_total)), sample_num)
+        elapsed = time.time() - self.start_time
+        remaining = max(total_training_samples - sample_num, 0)
+        eta_seconds = int(elapsed * remaining / sample_num) if sample_num > 0 else 0
         logger.info(
             f"Train | Sample # {sample_num} | train_loss {train_loss:.4f} | train_acc {train_acc:.4f} | "
             f"lr {self.optimizer.param_groups[0]['lr']:.6f} | "
             f"Num_Classes {len(self.exposed_classes)} | "
-            f"running_time {datetime.timedelta(seconds=int(time.time() - self.start_time))} | "
-            f"ETA {datetime.timedelta(seconds=int((time.time() - self.start_time) * (self.total_samples*self.num_epochs-sample_num) / sample_num))}"
+            f"running_time {datetime.timedelta(seconds=int(elapsed))} | "
+            f"ETA {datetime.timedelta(seconds=eta_seconds)}"
         )
         self._log_swanlab({
             "train/loss": train_loss,

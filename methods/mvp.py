@@ -253,11 +253,16 @@ class MVP(_Trainer):
         return loss.mean() + self.model_without_ddp.get_similarity_loss()
 
     def report_training(self, sample_num, train_loss, train_acc):
+        fallback_total = getattr(self, "total_samples", sample_num)
+        total_training_samples = max(int(getattr(self, "total_training_samples", fallback_total)), sample_num)
+        elapsed = time.time() - self.start_time
+        remaining = max(total_training_samples - sample_num, 0)
+        eta_seconds = int(elapsed * remaining / sample_num) if sample_num > 0 else 0
         logger.info(
              f"Train | Sample # {sample_num} | train_loss {train_loss:.4f} | train_acc {train_acc:.4f} | "
              f"lr {self.optimizer.param_groups[0]['lr']:.6f} | "
-             f"running_time {datetime.timedelta(seconds=int(time.time() - self.start_time))} | "
-             f"ETA {datetime.timedelta(seconds=int((time.time() - self.start_time) * (self.total_samples-sample_num) / sample_num))} | "
+             f"running_time {datetime.timedelta(seconds=int(elapsed))} | "
+             f"ETA {datetime.timedelta(seconds=eta_seconds)} | "
              f"N_Prompts {self.model_without_ddp.e_prompts.size(0)} | "
              f"N_Exposed {len(self.exposed_classes)} | "
              f"Counts {self.model_without_ddp.count.to(torch.int64).tolist()}"

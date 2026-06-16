@@ -1,14 +1,9 @@
 import gc
-import logging
 from typing import List
 
 import torch
 
 from methods._trainer import _Trainer
-from models.hide_norga_prefix_vit import HiDePrefixModel, NoRGaPrefixModel
-from utils.train_utils import select_optimizer, select_scheduler
-
-logger = logging.getLogger()
 
 
 class _BaseHiDeNoRGaTrainer(_Trainer):
@@ -32,43 +27,6 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
         super().setup_distributed_dataset()
         if not hasattr(self, "class_to_first_task") or len(self.class_to_first_task) != self.n_classes:
             self.class_to_first_task = [-1 for _ in range(self.n_classes)]
-
-    def build_model(self, use_norga: bool = False):
-        logger.info(f"Building {'NoRGa' if use_norga else 'HiDe'} Prefix model")
-        if use_norga:
-            model_cls = NoRGaPrefixModel
-        else:
-            model_cls = HiDePrefixModel
-
-        extra_kwargs = {}
-        if hasattr(self, "use_rp_gate"):
-            extra_kwargs["use_rp_gate"] = self.use_rp_gate
-        if hasattr(self, "rp_dim"):
-            extra_kwargs["rp_dim"] = self.rp_dim
-        if hasattr(self, "rp_ridge"):
-            extra_kwargs["rp_ridge"] = self.rp_ridge
-        if hasattr(self, "use_ema_head"):
-            extra_kwargs["use_ema_head"] = self.use_ema_head
-        if hasattr(self, "ema_ratio"):
-            extra_kwargs["ema_ratio"] = self.ema_ratio
-
-        self.model = model_cls(
-            backbone_name=self.backbone,
-            num_classes=self.n_classes,
-            task_num=self.n_tasks,
-            **extra_kwargs,
-        ).to(self.device)
-        self.model_without_ddp = self.model
-        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
-        self.lr_gamma = 0.9999
-        self.scheduler = select_scheduler(self.sched_name, self.optimizer, self.lr_gamma)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
-        self.criterion = getattr(
-            self.model_without_ddp,
-            "loss_fn",
-            torch.nn.CrossEntropyLoss(reduction="mean"),
-        )
-
 
     def _get_old_class_mask(self) -> torch.Tensor:
         mask = torch.zeros(self.n_classes, dtype=torch.bool, device=self.device)

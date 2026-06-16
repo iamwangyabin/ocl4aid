@@ -34,6 +34,13 @@ to that root.
 - `real = 0`
 - `fake = 1`
 
+## Online Setting
+
+Incremental stages are single-pass by design. `--base_epochs` only controls how
+many passes are used for the first active protocol stage; every later online
+stage is observed once. `--online_iter` controls how many optimizer updates are
+run when a mini-batch arrives.
+
 ## Train
 
 ```bash
@@ -41,7 +48,7 @@ python3 main.py \
   --caidbench_data_dir /path/to/CAIDBench \
   --method flyprompt \
   --caidbench_label_mode generator \
-  --num_epochs 1 \
+  --base_epochs 1 \
   --no_swanlab
 ```
 
