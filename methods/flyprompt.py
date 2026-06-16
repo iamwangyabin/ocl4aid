@@ -24,11 +24,11 @@ class FlyPrompt(_Trainer):
 
         self.collect(images.clone(), labels.clone())
 
-        # Update internal step schedule based only on the number of samples
-        # seen (task-boundary-free).
-        if hasattr(self, "_maybe_advance_internal_step"):
+        # Update internal session schedule based only on the number of samples
+        # seen during the online phase.
+        if hasattr(self, "_maybe_advance_internal_session"):
             batch_size_global = images.size(0) * self.world_size
-            self._maybe_advance_internal_step(batch_size_global)
+            self._maybe_advance_internal_session(batch_size_global)
 
         del images, labels
         gc.collect()
@@ -80,8 +80,7 @@ class FlyPrompt(_Trainer):
         self.update_schedule()
 
         # Update EMA heads for the expert corresponding to the current
-        # internal step (model.task_count). This avoids using benchmark
-        # task ids.
+        # internal session. This avoids using benchmark task ids.
         if hasattr(self.model_without_ddp, "update_ema_fc"):
             self.model_without_ddp.update_ema_fc()
 
@@ -131,7 +130,7 @@ class FlyPrompt(_Trainer):
         """Hook called after each benchmark task.
 
         We keep ``task_id`` for task bookkeeping only; the underlying model's
-        internal step state is advanced exclusively via the task-free
-        ``_maybe_advance_internal_step`` scheduler.
+        internal session state is advanced exclusively via the task-free
+        online scheduler.
         """
         self.task_id += 1

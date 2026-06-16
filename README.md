@@ -36,19 +36,34 @@ to that root.
 
 ## Online Setting
 
-Incremental stages are single-pass by design. `--base_epochs` only controls how
-many passes are used for the first active protocol stage; every later online
-stage is observed once. `--online_iter` controls how many optimizer updates are
-run when a mini-batch arrives.
+The protocol YAML defines the continual process: active stage order, the base
+stage, and every later online stage. Stage 0 is treated as the base session.
+`--base_epochs` only controls how many passes are used for that first active
+protocol stage; every later online stage is observed once. `--online_iter`
+controls how many optimizer updates are run when a mini-batch arrives.
+
+FlyPrompt, DualPrompt, and MVP keep their task-free internal prompt-session
+schedule, but it is active only during the online phase. By default the number
+of internal sessions is inferred from the protocol stage count, with the base
+session occupying slot 0.
+
+Periodic online evaluation follows a FlyPrompt-style stream checkpoint: by
+default the trainer evaluates every 20000 online training samples using the full
+test slices for the generators seen so far. These stream evaluations are logged
+separately from the stage-boundary metrics in `seed_<seed>_ocl_metrics.json`.
+
+## Configuration
+
+Common framework settings live in `configs/framework/caidbench.yaml`. Method
+settings live under `configs/methods/<method>.yaml` when a method needs its own
+hyperparameters. CLI flags still override YAML values.
 
 ## Train
 
 ```bash
 python3 main.py \
-  --caidbench_data_dir /path/to/CAIDBench \
+  --config configs/framework/caidbench.yaml \
   --method flyprompt \
-  --caidbench_label_mode generator \
-  --base_epochs 1 \
   --no_swanlab
 ```
 

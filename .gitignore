@@ -26,6 +26,11 @@ ENV/
 # Local datasets and experiment outputs
 data/
 results/
+outputs/
+run_logs/
+
+# Local OS files
+.DS_Store
 
 # Notebook and local Python runtime files
 .ipynb_checkpoints/

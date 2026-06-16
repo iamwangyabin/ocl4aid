@@ -29,7 +29,7 @@ class MVP(_Trainer):
     def _collect_rp_features(self, images, labels):
         """Collect features for RPFC gating (if enabled).
 
-        Uses backbone CLS features and current internal step id as regression
+        Uses backbone CLS features and current internal session id as regression
         targets, following the FlyPrompt RPFC design.
         """
         use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
@@ -62,14 +62,14 @@ class MVP(_Trainer):
             x = self.model_without_ddp.backbone.norm(x)
             cls_feat = x[:, 0]
 
-        step_id = getattr(self, "current_step", 0)
-        step_labels = torch.full(
+        session_id = getattr(self, "current_session", 0)
+        session_labels = torch.full(
             (labels.size(0),),
-            step_id,
+            session_id,
             device=labels.device,
             dtype=torch.long,
         )
-        self.model_without_ddp.rp_head.collect(cls_feat, step_labels)
+        self.model_without_ddp.rp_head.collect(cls_feat, session_labels)
 
 
 
@@ -84,15 +84,15 @@ class MVP(_Trainer):
             _acc += acc
             _iter += 1
 
-        # Collect RPFC features once per online_step (per internal step), using
+        # Collect RPFC features once per online update (per internal session), using
         # the original images/labels (before deletion).
         self._collect_rp_features(images.clone(), labels.clone())
 
-        # Update internal step schedule based only on the number of samples
-        # seen (task-boundary-free).
-        if hasattr(self, "_maybe_advance_internal_step"):
+        # Update internal session schedule based only on the number of samples
+        # seen during the online phase.
+        if hasattr(self, "_maybe_advance_internal_session"):
             batch_size_global = images.size(0) * self.world_size
-            self._maybe_advance_internal_step(batch_size_global)
+            self._maybe_advance_internal_session(batch_size_global)
 
         del (images, labels)
         gc.collect()
@@ -188,8 +188,8 @@ class MVP(_Trainer):
         """Hook called after each benchmark task.
 
         We keep ``task_id`` for task bookkeeping only; the underlying model's
-        internal step state is advanced exclusively via the task-free
-        ``_maybe_advance_internal_step`` scheduler.
+        internal session state is advanced exclusively via the task-free
+        online scheduler.
         """
         self.task_id += 1
 

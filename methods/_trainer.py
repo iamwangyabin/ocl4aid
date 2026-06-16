@@ -48,25 +48,24 @@ class _Trainer():
             if self.base_batchsize < 1:
                 raise ValueError(f"base_batchsize must be >= 1, got {self.base_batchsize}")
 
-        # Internal step-based schedule (task-boundary-free) for selected methods.
-        method_name = getattr(self, "method", None)
-        step_aware_methods = {"dualprompt", "mvp", "flyprompt"}
-        if method_name in step_aware_methods:
-            # step_num > 1; if not provided or <=0, default to n_tasks.
-            self.step_num = getattr(self, "step_num", None)
-            if self.step_num is None or self.step_num <= 0:
-                if hasattr(self, "n_tasks"):
-                    self.step_num = self.n_tasks
-            if self.step_num is not None and self.step_num <= 1:
-                raise ValueError(f"step_num must be > 1, got {self.step_num}")
-        else:
-            # Other methods keep using the original task-id based schedule.
-            self.step_num = None
+        self._internal_session_methods = {"dualprompt", "mvp", "flyprompt"}
+        self.use_internal_online_scheduler = (
+            getattr(self, "method", None) in self._internal_session_methods
+        )
+
+        self.eval_interval = int(getattr(self, "eval_interval", 20000) or 0)
 
         # These will be fully initialized once dataset size is known.
-        self.current_step = 0
-        self.current_step_seen_samples = 0
-        self.samples_per_step = None
+        self.phase = "init"
+        self.current_session = 0
+        self.current_session_seen_samples = 0
+        self.samples_per_session = None
+        self.internal_session_count = None
+        self.online_session_count = 0
+        self.base_stage_samples = 0
+        self.online_training_samples = 0
+        self.online_samples_seen = 0
+        self._next_stream_eval_at = self.eval_interval if self.eval_interval > 0 else None
         self._swanlab = None
         self._swanlab_run = None
         self._swanlab_enabled = False
@@ -333,13 +332,46 @@ class _Trainer():
             raise ValueError("CAIDBenchmark protocol has no non-empty training stages.")
         self.n_tasks = len(self.protocol_stage_ids)
         self.protocol_generator_order = self.train_dataset.generator_order
-        if self.method in {"dualprompt", "mvp", "flyprompt"}:
-            raw_step_num = self.kwargs.get("step_num", None)
-            if raw_step_num is None or raw_step_num <= 0:
-                self.step_num = self.n_tasks
+        self._resolve_internal_sessions_from_protocol()
 
         self.exposed_classes = []
         self.mask = torch.zeros(self.n_classes, device=self.device) - torch.inf
+
+    def _resolve_internal_sessions_from_protocol(self):
+        stage_indices = getattr(self.train_dataset, "stage_indices", {})
+        self.base_stage_samples = len(stage_indices.get(self.protocol_stage_ids[0], []))
+        self.online_training_samples = sum(
+            len(stage_indices.get(stage_id, []))
+            for stage_id in self.protocol_stage_ids[1:]
+        )
+
+        if not self.use_internal_online_scheduler:
+            self.internal_session_count = self.n_tasks
+            self.online_session_count = max(self.n_tasks - 1, 0)
+            logger.info(
+                "Protocol stages: %s | base stage samples: %s | online samples: %s",
+                self.n_tasks,
+                self.base_stage_samples,
+                self.online_training_samples,
+            )
+            return
+
+        if self.n_tasks <= 1:
+            raise ValueError(
+                "Internal-session prompt methods require at least two sessions "
+                f"(base + online), got {self.n_tasks}."
+            )
+
+        self.internal_session_count = self.n_tasks
+        self.online_session_count = self.internal_session_count - 1
+
+        logger.info(
+            "Protocol stages: %s | internal sessions: %s | base stage samples: %s | online samples: %s",
+            self.n_tasks,
+            self.internal_session_count,
+            self.base_stage_samples,
+            self.online_training_samples,
+        )
 
     def setup_distributed_model(self):
 
@@ -377,53 +409,137 @@ class _Trainer():
             else:
                 self.main_worker(0)
 
-    def _init_internal_step_scheduler(self):
-        """Initialize internal step schedule based on dataloader-observed samples.
-
-        The step schedule is intentionally decoupled from benchmark tasks:
-        step boundaries are determined only by how many training samples have
-        been seen in total, including repeated base-session passes.
-        """
-        if getattr(self, "step_num", None) is None:
+    def _init_internal_session_scheduler(self):
+        """Initialize task-free internal session schedule for the online phase."""
+        if not self.use_internal_online_scheduler:
             return
-        if self.step_num <= 1:
-            # Already validated in __init__, but guard for safety.
-            raise ValueError(f"step_num must be > 1, got {self.step_num}")
+        if self.internal_session_count <= 1:
+            raise ValueError(f"internal_session_count must be > 1, got {self.internal_session_count}")
 
-        schedule_total = int(getattr(self, "total_training_samples", getattr(self, "total_samples", 0)))
-        if schedule_total <= 0:
+        online_total = int(getattr(self, "online_training_samples", 0))
+        if online_total <= 0:
             return
 
-        # Use the actual number of dataloader-observed samples so base_epochs > 1
-        # does not advance internal prompt steps too early.
-        self.samples_per_step = max(1, schedule_total // self.step_num)
-        self.current_step = 0
-        self.current_step_seen_samples = 0
+        self.samples_per_session = max(1, online_total // self.online_session_count)
+        self.current_session = 0
+        self.current_session_seen_samples = 0
+        logger.info(
+            "Online internal-session scheduler: %s online samples / %s online sessions -> %s samples per session",
+            online_total,
+            self.online_session_count,
+            self.samples_per_session,
+        )
 
-    def _maybe_advance_internal_step(self, batch_size: int):
-        """Advance internal step counter purely based on seen samples.
+    def _model_for_internal_session_update(self):
+        model_obj = getattr(self, "model_without_ddp", None)
+        if model_obj is None:
+            model_obj = getattr(self, "model", None)
+        return model_obj
 
-        This does not use any ground-truth task boundary information. When a
-        new step begins, the underlying model is notified via
-        ``process_task_count()``, if implemented.
-        """
-        if getattr(self, "step_num", None) is None:
+    def _advance_model_internal_session(self):
+        model_obj = self._model_for_internal_session_update()
+        if model_obj is not None and hasattr(model_obj, "process_task_count"):
+            model_obj.process_task_count()
+
+    def _start_online_internal_session(self):
+        if not self.use_internal_online_scheduler:
             return
-        if getattr(self, "samples_per_step", None) is None:
+        if self.internal_session_count <= 1:
             return
-        if self.step_num <= 1 or batch_size <= 0:
+        if self.current_session != 0:
+            return
+        self.current_session = 1
+        self.current_session_seen_samples = 0
+        self._advance_model_internal_session()
+        logger.info("Internal session advanced after base: 0 -> 1")
+
+    def _maybe_advance_internal_session(self, batch_size: int):
+        """Advance online internal session counter based only on seen samples."""
+        if not self.use_internal_online_scheduler:
+            return
+        if getattr(self, "phase", None) != "online":
+            return
+        if getattr(self, "samples_per_session", None) is None:
+            return
+        if self.internal_session_count <= 1 or batch_size <= 0:
             return
 
-        self.current_step_seen_samples += batch_size
-        while self.current_step < self.step_num - 1 and self.current_step_seen_samples >= self.samples_per_step:
-            self.current_step_seen_samples -= self.samples_per_step
-            self.current_step += 1
+        self.current_session_seen_samples += batch_size
+        while (
+            self.current_session < self.internal_session_count - 1
+            and self.current_session_seen_samples >= self.samples_per_session
+        ):
+            self.current_session_seen_samples -= self.samples_per_session
+            self.current_session += 1
+            self._advance_model_internal_session()
+            logger.info("Internal session advanced by online samples: %s", self.current_session)
 
-            model_obj = getattr(self, "model_without_ddp", None)
-            if model_obj is None:
-                model_obj = getattr(self, "model", None)
-            if model_obj is not None and hasattr(model_obj, "process_task_count"):
-                model_obj.process_task_count()
+    def _protocol_eval_average(self, stage_metric: StageMetrics) -> float:
+        if not stage_metric.internal_accuracy_by_generator:
+            return 0.0
+        return (
+            sum(stage_metric.internal_accuracy_by_generator.values())
+            / len(stage_metric.internal_accuracy_by_generator)
+        )
+
+    def _protocol_metric_payload(self, stage_metric: StageMetrics):
+        return {
+            "stage_id": stage_metric.stage_id,
+            "new_generators": stage_metric.new_generators,
+            "internal_accuracy_by_generator": stage_metric.internal_accuracy_by_generator,
+            "external_accuracy_by_subset": stage_metric.external_accuracy_by_subset,
+        }
+
+    def _log_protocol_eval(self, stage_metric: StageMetrics, stage_name: str, *, stream_sample=None):
+        internal_avg = self._protocol_eval_average(stage_metric)
+        current_acc = stage_metric.internal_accuracy_by_generator.get(stage_name, 0.0)
+        if stream_sample is None:
+            logger.info(
+                "Protocol Eval | stage %s | avg_internal_acc %.4f | plasticity %.4f",
+                stage_metric.stage_id,
+                internal_avg,
+                current_acc,
+            )
+            prefix = "protocol"
+            step = stage_metric.stage_id
+        else:
+            logger.info(
+                "Protocol Stream Eval | online_sample %s | stage %s | avg_internal_acc %.4f | plasticity %.4f",
+                stream_sample,
+                stage_metric.stage_id,
+                internal_avg,
+                current_acc,
+            )
+            prefix = "protocol_stream"
+            step = stream_sample
+
+        swanlab_metrics = {
+            f"{prefix}/stage": stage_metric.stage_id,
+            f"{prefix}/internal_avg_acc": internal_avg,
+            f"{prefix}/current_generator_acc": current_acc,
+        }
+        for generator_name, score in stage_metric.internal_accuracy_by_generator.items():
+            swanlab_metrics[f"{prefix}/internal/{self._metric_slug(generator_name)}"] = score
+        self._log_swanlab(swanlab_metrics, step=step)
+
+    def _maybe_run_stream_eval(self, stage_id: int, stream_metrics):
+        if self.eval_interval <= 0 or self._next_stream_eval_at is None:
+            return
+
+        while self.online_samples_seen >= self._next_stream_eval_at:
+            stream_sample = self._next_stream_eval_at
+            if self.distributed:
+                dist.barrier()
+            if self.is_main_process():
+                stage_name = self.protocol_generator_order[stage_id]["generator_name"]
+                stage_metric = self._evaluate_protocol_stage(stage_id)
+                self._log_protocol_eval(stage_metric, stage_name, stream_sample=stream_sample)
+                stream_payload = self._protocol_metric_payload(stage_metric)
+                stream_payload["online_sample"] = stream_sample
+                stream_metrics.append(stream_payload)
+            if self.distributed:
+                dist.barrier()
+            self._next_stream_eval_at += self.eval_interval
 
     def _run_protocol_loop(self):
         logger.info(f"[2] Incrementally training protocol stages ({self.n_tasks})")
@@ -431,6 +547,7 @@ class _Trainer():
         num_report = 2000
         report_period = 500
         stage_metrics = []
+        stream_metrics = []
 
         for task_pos, stage_id in enumerate(self.protocol_stage_ids):
             stage_name = self.protocol_generator_order[stage_id]["generator_name"]
@@ -439,6 +556,7 @@ class _Trainer():
             logger.info(f"# Stage {stage_id}: {stage_name}")
             logger.info("#" * 50 + "\n")
 
+            self.phase = "base" if task_pos == 0 else "online"
             self.train_sampler.set_task(stage_id)
             self.online_before_task(stage_id)
             stage_epochs = self.base_epochs if task_pos == 0 else 1
@@ -450,51 +568,40 @@ class _Trainer():
             for epoch in range(stage_epochs):
                 logger.info(f"Pass {epoch + 1}/{stage_epochs}")
                 for images, labels, idx in train_dataloader:
-                    samples_cnt += images.size(0) * self.world_size
+                    batch_size_global = images.size(0) * self.world_size
+                    samples_cnt += batch_size_global
                     loss, acc = self.online_step(images, labels, idx)
-                    if samples_cnt + images.size(0) * self.world_size > num_report:
+                    if samples_cnt >= num_report:
                         self.report_training(samples_cnt, loss, acc)
                         num_report += report_period
+                    if self.phase == "online":
+                        self.online_samples_seen += batch_size_global
+                        self._maybe_run_stream_eval(stage_id, stream_metrics)
                     sys.stdout.flush()
 
+            if self.distributed:
+                dist.barrier()
             if self.is_main_process():
                 stage_metric = self._evaluate_protocol_stage(stage_id)
                 stage_metrics.append(stage_metric)
-                internal_avg = (
-                    sum(stage_metric.internal_accuracy_by_generator.values()) / len(stage_metric.internal_accuracy_by_generator)
-                    if stage_metric.internal_accuracy_by_generator else 0.0
-                )
-                logger.info(
-                    "Protocol Eval | stage %s | avg_internal_acc %.4f | plasticity %.4f",
-                    stage_id,
-                    internal_avg,
-                    stage_metric.internal_accuracy_by_generator.get(stage_name, 0.0),
-                )
-                swanlab_metrics = {
-                    "protocol/stage": stage_id,
-                    "protocol/internal_avg_acc": internal_avg,
-                    "protocol/current_generator_acc": stage_metric.internal_accuracy_by_generator.get(stage_name, 0.0),
-                }
-                for generator_name, score in stage_metric.internal_accuracy_by_generator.items():
-                    swanlab_metrics[f"protocol/internal/{self._metric_slug(generator_name)}"] = score
-                self._log_swanlab(swanlab_metrics, step=stage_id)
+                self._log_protocol_eval(stage_metric, stage_name)
+            if self.distributed:
+                dist.barrier()
 
             self.online_after_task(stage_id)
             if task_pos == 0:
+                self._start_online_internal_session()
                 self._save_base_checkpoint(stage_id)
 
+        self.phase = "done"
         if self.is_main_process():
             metrics = compute_online_metrics(stage_metrics)
             summary = {
                 "stage_metrics": [
-                    {
-                        "stage_id": item.stage_id,
-                        "new_generators": item.new_generators,
-                        "internal_accuracy_by_generator": item.internal_accuracy_by_generator,
-                        "external_accuracy_by_subset": item.external_accuracy_by_subset,
-                    }
+                    self._protocol_metric_payload(item)
                     for item in stage_metrics
                 ],
+                "stream_metrics": stream_metrics,
                 "metrics": metrics,
             }
             output_path = os.path.join(self.log_dir, f"seed_{self.rnd_seed}_ocl_metrics.json")
@@ -516,12 +623,15 @@ class _Trainer():
         if not hasattr(self, "train_dataset") or not hasattr(self, "protocol_stage_ids"):
             return getattr(self, "total_samples", 0)
         stage_indices = getattr(self.train_dataset, "stage_indices", {})
-        total = sum(len(indices) for indices in stage_indices.values())
         if not self.protocol_stage_ids:
-            return total
+            return sum(len(indices) for indices in stage_indices.values())
         base_stage_id = self.protocol_stage_ids[0]
         base_count = len(stage_indices.get(base_stage_id, []))
-        return total + max(self.base_epochs - 1, 0) * base_count
+        online_count = sum(
+            len(stage_indices.get(stage_id, []))
+            for stage_id in self.protocol_stage_ids[1:]
+        )
+        return self.base_epochs * base_count + online_count
 
     def _move_checkpoint_state_to_cpu(self, value):
         if isinstance(value, torch.Tensor):
@@ -556,9 +666,9 @@ class _Trainer():
             "optimizer_state": optimizer_state,
             "scheduler_state": self.scheduler.state_dict(),
             "scaler_state": scaler_state,
-            "current_step": getattr(self, "current_step", None),
-            "current_step_seen_samples": getattr(self, "current_step_seen_samples", None),
-            "samples_per_step": getattr(self, "samples_per_step", None),
+            "current_session": getattr(self, "current_session", None),
+            "current_session_seen_samples": getattr(self, "current_session_seen_samples", None),
+            "samples_per_session": getattr(self, "samples_per_session", None),
             "base_epochs": self.base_epochs,
             "batchsize": self.batchsize,
             "base_batchsize": self.base_batchsize,
@@ -725,7 +835,7 @@ class _Trainer():
         self.setup_distributed_dataset()
         self.total_samples = len(self.train_dataset)
         self.total_training_samples = self._expected_training_samples()
-        self._init_internal_step_scheduler()
+        self._init_internal_session_scheduler()
 
         logger.info(f"[1] Select a GCL method ({self.method})")
         self.setup_distributed_model()
@@ -770,7 +880,7 @@ class _Trainer():
         self.setup_distributed_dataset()
         self.total_samples = len(self.train_dataset)
         self.total_training_samples = self._expected_training_samples()
-        self._init_internal_step_scheduler()
+        self._init_internal_session_scheduler()
 
         self.setup_distributed_model()
 

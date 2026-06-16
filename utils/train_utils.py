@@ -90,21 +90,11 @@ def select_model(method, backbone, num_classes=None, n_tasks=None, kwargs=None):
                 drop_block_rate=None
             )
     elif method in MODELS.keys():
-        # For most methods, task_num corresponds to the benchmark number of
-        # tasks (n_tasks). For some prompt-based methods (DualPrompt, MVP,
-        # FlyPrompt), we instead interpret task_num as the number of internal
-        # steps, which can be overridden by ``step_num`` if provided.
-        task_num_for_model = n_tasks
-        if kwargs is not None and method in ("dualprompt", "mvp", "flyprompt"):
-            step_num = kwargs.get("step_num", None)
-            if step_num is not None and step_num > 0:
-                task_num_for_model = step_num
-
         model = MODELS[method](
             backbone_name=backbone,
             pretrained=True,
             num_classes=num_classes,
-            task_num=task_num_for_model,
+            task_num=n_tasks,
             **kwargs
         )
     else:
