@@ -42,6 +42,11 @@ class _Trainer():
         self.base_epochs = int(getattr(self, "base_epochs", 1))
         if self.base_epochs < 1:
             raise ValueError(f"base_epochs must be >= 1, got {self.base_epochs}")
+        self.base_batchsize = getattr(self, "base_batchsize", None)
+        if self.base_batchsize is not None:
+            self.base_batchsize = int(self.base_batchsize)
+            if self.base_batchsize < 1:
+                raise ValueError(f"base_batchsize must be >= 1, got {self.base_batchsize}")
 
         # Internal step-based schedule (task-boundary-free) for selected methods.
         method_name = getattr(self, "method", None)
@@ -81,6 +86,8 @@ class _Trainer():
         self.dist_url = 'env://'
         if self.distributed:
             self.batchsize = self.batchsize // self.world_size
+            if self.base_batchsize is not None:
+                self.base_batchsize = max(1, self.base_batchsize // self.world_size)
 
         self.log_dir = f"{self.log_path}/logs/{DATASET_NAME}/{self.note}"
 
@@ -310,6 +317,15 @@ class _Trainer():
             num_workers=self.n_worker,
             persistent_workers=self.n_worker > 0,
         )
+        base_batchsize = self.base_batchsize or self.batchsize
+        self.base_train_dataloader = DataLoader(
+            self.online_iter_dataset,
+            batch_size=base_batchsize,
+            sampler=self.train_sampler,
+            pin_memory=False,
+            num_workers=self.n_worker,
+            persistent_workers=self.n_worker > 0,
+        )
         self.test_sampler = None
         self.protocol_stage_ids = list(self.train_dataset.active_stage_ids)
         if not self.protocol_stage_ids:
@@ -426,12 +442,13 @@ class _Trainer():
             self.online_before_task(stage_id)
             stage_epochs = self.base_epochs if task_pos == 0 else 1
             if task_pos == 0:
-                logger.info(f"Base session epochs: {stage_epochs}")
+                logger.info(f"Base session epochs: {stage_epochs} | batch_size {self.base_batchsize or self.batchsize}")
             else:
-                logger.info("Online stage: single pass")
+                logger.info(f"Online stage: single pass | batch_size {self.batchsize}")
+            train_dataloader = self.base_train_dataloader if task_pos == 0 else self.train_dataloader
             for epoch in range(stage_epochs):
                 logger.info(f"Pass {epoch + 1}/{stage_epochs}")
-                for images, labels, idx in self.train_dataloader:
+                for images, labels, idx in train_dataloader:
                     samples_cnt += images.size(0) * self.world_size
                     loss, acc = self.online_step(images, labels, idx)
                     if samples_cnt + images.size(0) * self.world_size > num_report:

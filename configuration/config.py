@@ -62,6 +62,8 @@ def base_parser():
     parser.add_argument("--use_amp", action="store_true", default=False, help="Use automatic mixed precision.")
     parser.add_argument("--n_worker", type=int, default=0, help="The number of workers")
     parser.add_argument("--batchsize", type=int, default=16, help="batch size")
+    parser.add_argument("--base_batchsize", type=int, default=None,
+                        help="Optional larger batch size for the base session only. Online stages keep --batchsize.")
     parser.add_argument("--lr", type=float, default=0.05, help="learning rate")
     parser.add_argument("--base_epochs", type=int, default=1,
                         help="Number of epochs for the base session only. Online stages are single-pass.")
