@@ -232,6 +232,30 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
         self.assertIn(2, {origin(i) for i in sampler.indices[1]})
         self.assertIn(1, {origin(i) for i in sampler.indices[2]})
 
+    def test_temporal_blurry_sampler_can_freeze_base_stage(self):
+        stage_indices = {
+            0: list(range(0, 6)),
+            1: list(range(6, 12)),
+            2: list(range(12, 18)),
+            3: list(range(18, 24)),
+        }
+        sampler = ManifestStageSampler(
+            _TinyStageDataset(24),
+            stage_indices,
+            seed=11,
+            stage_blurry_n=0,
+            stage_blurry_m=50,
+            stage_blurry_start_pos=1,
+        )
+
+        def origin(index):
+            return index // 6
+
+        self.assertEqual(set(sampler.indices[0]), set(stage_indices[0]))
+        self.assertTrue({origin(i) for i in sampler.indices[1]}.issubset({1, 2}))
+        self.assertTrue({origin(i) for i in sampler.indices[2]}.issubset({1, 2, 3}))
+        self.assertTrue({origin(i) for i in sampler.indices[3]}.issubset({2, 3}))
+
 
 if __name__ == "__main__":
     unittest.main()

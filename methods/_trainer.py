@@ -44,6 +44,7 @@ _LEARNER_KWARG_DENYLIST = {
     "caidbench_index_path",
     "caidbench_image_column",
     "eval_interval",
+    "base_stage_epochs",
     "stage_blurry_n",
     "stage_blurry_m",
     "batchsize",
@@ -73,6 +74,11 @@ class _Trainer():
 
         self.start_time = time.time()
         self.eval_interval = int(getattr(self, "eval_interval", 20000) or 0)
+        self.base_stage_epochs = int(getattr(self, "base_stage_epochs", 1) or 0)
+        if self.base_stage_epochs < 0:
+            raise ValueError(
+                f"--base_stage_epochs must be non-negative, got {self.base_stage_epochs}"
+            )
 
         # These will be fully initialized once dataset size is known.
         self.phase = "init"
@@ -359,6 +365,13 @@ class _Trainer():
             image_column=self.caidbench_image_column,
         )
 
+        self.protocol_stage_ids = list(self.train_dataset.active_stage_ids)
+        if not self.protocol_stage_ids:
+            raise ValueError("CAIDBenchmark protocol has no non-empty training stages.")
+        self.protocol_stage_count = len(self.protocol_stage_ids)
+        self.n_tasks = self.protocol_stage_count
+        self.protocol_generator_order = self.train_dataset.generator_order
+
         _r = dist.get_rank() if self.distributed else None
         _w = dist.get_world_size() if self.distributed else None
         self.train_sampler = ManifestStageSampler(
@@ -369,6 +382,7 @@ class _Trainer():
             seed=self.rnd_seed,
             stage_blurry_n=getattr(self, "stage_blurry_n", 100),
             stage_blurry_m=getattr(self, "stage_blurry_m", 0),
+            stage_blurry_start_pos=1 if self._base_stage_enabled() else 0,
         )
         self.train_dataloader = DataLoader(
             self.online_iter_dataset,
@@ -379,28 +393,44 @@ class _Trainer():
             persistent_workers=self.n_worker > 0,
         )
         self.test_sampler = None
-        self.protocol_stage_ids = list(self.train_dataset.active_stage_ids)
-        if not self.protocol_stage_ids:
-            raise ValueError("CAIDBenchmark protocol has no non-empty training stages.")
-        self.protocol_stage_count = len(self.protocol_stage_ids)
-        self.n_tasks = self.protocol_stage_count
-        self.protocol_generator_order = self.train_dataset.generator_order
         self._log_protocol_stream_metadata()
 
         self.exposed_classes = []
         self.mask = torch.zeros(self.n_classes, device=self.device) - torch.inf
 
+    def _base_stage_enabled(self):
+        return self.base_stage_epochs > 0 and bool(getattr(self, "protocol_stage_ids", []))
+
+    def _base_stage_id(self):
+        if not self._base_stage_enabled():
+            return None
+        return self.protocol_stage_ids[0]
+
+    def _online_stage_ids(self):
+        stage_ids = list(getattr(self, "protocol_stage_ids", []))
+        if self._base_stage_enabled():
+            return stage_ids[1:]
+        return stage_ids
+
     def _log_protocol_stream_metadata(self):
         stage_indices = getattr(self.train_dataset, "stage_indices", {})
-        stream_samples = sum(
+        base_stage_id = self._base_stage_id()
+        base_samples = 0
+        if base_stage_id is not None:
+            base_samples = len(stage_indices.get(base_stage_id, [])) * self.base_stage_epochs
+        online_stage_ids = self._online_stage_ids()
+        online_samples = sum(
             len(stage_indices.get(stage_id, []))
-            for stage_id in self.protocol_stage_ids
+            for stage_id in online_stage_ids
         )
         logger.info(
-            "Protocol stream | framework generator tasks: %s | learner labels: binary | task slots: %s | training samples: %s | temporal blurry n=%s m=%s",
+            "Protocol stream | base_stage=%s | base_epochs=%s | online_stages=%s | learner labels: binary | task slots: %s | base samples: %s | online samples: %s | temporal blurry n=%s m=%s",
+            base_stage_id,
+            self.base_stage_epochs if base_stage_id is not None else 0,
+            len(online_stage_ids),
             self.protocol_stage_count,
-            self.n_tasks,
-            stream_samples,
+            base_samples,
+            online_samples,
             getattr(self, "stage_blurry_n", 100),
             getattr(self, "stage_blurry_m", 0),
         )
@@ -536,14 +566,16 @@ class _Trainer():
         self._log_swanlab(swanlab_metrics, step=step)
 
     def _stage_id_for_seen_samples(self, sample_count: int) -> int:
-        stage_end_offsets = getattr(self.train_sampler, "stage_end_offsets", None)
-        if not stage_end_offsets:
+        stage_ids = self._online_stage_ids()
+        if not stage_ids:
             return self.protocol_stage_ids[-1]
-        for stage_id in self.protocol_stage_ids:
-            end_offset = stage_end_offsets.get(stage_id)
-            if end_offset is not None and sample_count <= end_offset:
+        offset = 0
+        sampler_indices = getattr(self.train_sampler, "indices", {})
+        for stage_id in stage_ids:
+            offset += len(sampler_indices.get(stage_id, []))
+            if sample_count <= offset:
                 return stage_id
-        return self.protocol_stage_ids[-1]
+        return stage_ids[-1]
 
     def _maybe_run_stream_eval(self, stream_metrics):
         if self.eval_interval <= 0 or self._next_stream_eval_at is None:
@@ -565,23 +597,92 @@ class _Trainer():
                 dist.barrier()
             self._next_stream_eval_at += self.eval_interval
 
+    def _maybe_report_training(self, samples_cnt, loss, acc, next_report_at, report_period):
+        if samples_cnt >= next_report_at:
+            self.report_training(samples_cnt, loss, acc)
+            while next_report_at <= samples_cnt:
+                next_report_at += report_period
+        return next_report_at
+
+    def _run_base_stage(self, stage_metrics, samples_cnt, num_report, report_period):
+        base_stage_id = self._base_stage_id()
+        if base_stage_id is None:
+            return samples_cnt, num_report
+
+        stage_name = self.protocol_generator_order[base_stage_id]["generator_name"]
+        logger.info("\n")
+        logger.info("#" * 50)
+        logger.info(
+            "# Base Stage: %s | supervised epochs %s",
+            stage_name,
+            self.base_stage_epochs,
+        )
+        logger.info("#" * 50 + "\n")
+
+        self.phase = "base"
+        self.train_sampler.set_task(base_stage_id)
+        self.online_before_task(base_stage_id)
+
+        for epoch in range(self.base_stage_epochs):
+            logger.info("Base epoch %s/%s", epoch + 1, self.base_stage_epochs)
+            for images, labels, _idx in self.train_dataloader:
+                samples_cnt += images.size(0) * self.world_size
+                loss, acc = self.online_step(images, labels, None)
+                num_report = self._maybe_report_training(
+                    samples_cnt,
+                    loss,
+                    acc,
+                    num_report,
+                    report_period,
+                )
+                sys.stdout.flush()
+
+        if self.distributed:
+            dist.barrier()
+        if self.is_main_process():
+            stage_metric = self._evaluate_protocol_stage(base_stage_id)
+            stage_metrics.append(stage_metric)
+            self._log_protocol_eval(stage_metric, stage_name)
+        if self.distributed:
+            dist.barrier()
+
+        self.online_after_task(base_stage_id)
+        return samples_cnt, num_report
+
     def _run_protocol_loop(self):
         logger.info(
-            "[2] Incrementally training protocol generator tasks (%s stages, binary labels)",
+            "[2] Base stage training followed by online continual learning (%s stages, binary labels)",
             self.protocol_stage_count,
         )
         samples_cnt = 0
+        online_samples_cnt = 0
         num_report = 2000
         report_period = 500
         stage_metrics = []
         stream_metrics = []
-        self.phase = "stream"
 
-        for task_pos, stage_id in enumerate(self.protocol_stage_ids):
+        samples_cnt, num_report = self._run_base_stage(
+            stage_metrics,
+            samples_cnt,
+            num_report,
+            report_period,
+        )
+
+        self.phase = "stream"
+        online_stage_ids = self._online_stage_ids()
+        if not online_stage_ids:
+            logger.info("No online continual stages remain after base stage.")
+
+        for task_pos, stage_id in enumerate(online_stage_ids):
             stage_name = self.protocol_generator_order[stage_id]["generator_name"]
             logger.info("\n")
             logger.info("#" * 50)
-            logger.info("# Stage %s/%s: %s", task_pos + 1, self.protocol_stage_count, stage_name)
+            logger.info(
+                "# Online Stage %s/%s: %s",
+                task_pos + 1,
+                len(online_stage_ids),
+                stage_name,
+            )
             logger.info("#" * 50 + "\n")
 
             self.train_sampler.set_task(stage_id)
@@ -589,15 +690,20 @@ class _Trainer():
 
             for images, labels, _idx in self.train_dataloader:
                 batch_size_global = images.size(0) * self.world_size
+                online_samples_cnt += batch_size_global
                 samples_cnt += batch_size_global
-                self.online_samples_seen = samples_cnt
+                self.online_samples_seen = online_samples_cnt
 
                 # Framework stages are task boundaries, but the learner still
                 # receives only images and binary labels.
                 loss, acc = self.online_step(images, labels, None)
-                if samples_cnt >= num_report:
-                    self.report_training(samples_cnt, loss, acc)
-                    num_report += report_period
+                num_report = self._maybe_report_training(
+                    samples_cnt,
+                    loss,
+                    acc,
+                    num_report,
+                    report_period,
+                )
 
                 self._maybe_run_stream_eval(stream_metrics)
                 sys.stdout.flush()
@@ -647,13 +753,21 @@ class _Trainer():
     def _expected_training_samples(self):
         if not hasattr(self, "train_dataset") or not hasattr(self, "protocol_stage_ids"):
             return getattr(self, "total_samples", 0)
-        stage_indices = getattr(self.train_dataset, "stage_indices", {})
+        sampler_indices = getattr(getattr(self, "train_sampler", None), "indices", None)
+        if sampler_indices is None:
+            sampler_indices = getattr(self.train_dataset, "stage_indices", {})
         if not self.protocol_stage_ids:
-            return sum(len(indices) for indices in stage_indices.values())
-        return sum(
-            len(stage_indices.get(stage_id, []))
-            for stage_id in self.protocol_stage_ids
+            return sum(len(indices) for indices in sampler_indices.values())
+
+        total = 0
+        base_stage_id = self._base_stage_id()
+        if base_stage_id is not None:
+            total += len(sampler_indices.get(base_stage_id, [])) * self.base_stage_epochs
+        total += sum(
+            len(sampler_indices.get(stage_id, []))
+            for stage_id in self._online_stage_ids()
         )
+        return total
 
     def _evaluate_protocol_stage(self, stage_id: int) -> StageMetrics:
         self.model.eval()

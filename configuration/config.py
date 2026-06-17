@@ -48,6 +48,7 @@ def _framework_defaults(payload):
         ("train", "batch_size"): "batchsize",
         ("train", "lr"): "lr",
         ("train", "online_iter"): "online_iter",
+        ("train", "base_stage_epochs"): "base_stage_epochs",
         ("train", "stage_blurry_n"): "stage_blurry_n",
         ("train", "stage_blurry_m"): "stage_blurry_m",
         ("train", "transforms"): "transforms",
@@ -146,6 +147,8 @@ def base_parser():
                         help="Global online batch size. In DDP it is split evenly across ranks.")
     parser.add_argument("--lr", type=float, default=defaults.get("lr", 0.05), help="learning rate")
     parser.add_argument("--online_iter", type=float, default=defaults.get("online_iter", 1), help="number of model updates per samples seen.")
+    parser.add_argument("--base_stage_epochs", type=int, default=defaults.get("base_stage_epochs", 1),
+                        help="Supervised epochs on protocol stage 0 before online continual learning starts. Set 0 to disable.")
     parser.add_argument("--stage_blurry_n", "--blurry_n", "--n", dest="stage_blurry_n",
                         type=int, default=defaults.get("stage_blurry_n", 100),
                         help="Percent of each protocol stage kept as hard-boundary home samples. 100 recovers the strict stream.")

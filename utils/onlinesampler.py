@@ -21,6 +21,7 @@ class ManifestStreamSampler(DistributedSampler):
         seed: int = 0,
         stage_blurry_n: int = 100,
         stage_blurry_m: int = 0,
+        stage_blurry_start_pos: int = 0,
     ) -> None:
         self.data_source = data_source
         self.classes = self.data_source.classes
@@ -28,6 +29,7 @@ class ManifestStreamSampler(DistributedSampler):
         self.seed = int(seed or 0)
         self.stage_blurry_n = int(stage_blurry_n)
         self.stage_blurry_m = int(stage_blurry_m)
+        self.stage_blurry_start_pos = int(stage_blurry_start_pos)
         self._validate_stage_blurry_args()
 
         if (num_replicas is None) != (rank is None):
@@ -71,6 +73,10 @@ class ManifestStreamSampler(DistributedSampler):
             raise ValueError(
                 f"stage_blurry_m must be in [0, 100], got {self.stage_blurry_m}"
             )
+        if self.stage_blurry_start_pos < 0:
+            raise ValueError(
+                f"stage_blurry_start_pos must be non-negative, got {self.stage_blurry_start_pos}"
+            )
 
     def _temporal_blurry_stage_indices(self, stage_indices) -> dict[int, list[int]]:
         """Leak selected samples only to adjacent protocol time buckets.
@@ -84,18 +90,22 @@ class ManifestStreamSampler(DistributedSampler):
             stage_id: list(stage_indices[stage_id])
             for stage_id in self.stage_order
         }
+        blurry_order = self.stage_order[self.stage_blurry_start_pos :]
         if (
-            len(self.stage_order) <= 1
+            len(blurry_order) <= 1
             or self.stage_blurry_n == 100
             or self.stage_blurry_m == 0
         ):
             return base
 
-        kept = {stage_id: [] for stage_id in self.stage_order}
+        kept = {
+            stage_id: ([] if stage_id in blurry_order else list(base[stage_id]))
+            for stage_id in self.stage_order
+        }
         incoming = {stage_id: [] for stage_id in self.stage_order}
         eligible_ratio = 100 - self.stage_blurry_n
 
-        for pos, stage_id in enumerate(self.stage_order):
+        for pos, stage_id in enumerate(blurry_order):
             indices = list(base[stage_id])
             if not indices:
                 continue
@@ -116,9 +126,9 @@ class ManifestStreamSampler(DistributedSampler):
 
             neighbors = []
             if pos > 0:
-                neighbors.append(self.stage_order[pos - 1])
-            if pos + 1 < len(self.stage_order):
-                neighbors.append(self.stage_order[pos + 1])
+                neighbors.append(blurry_order[pos - 1])
+            if pos + 1 < len(blurry_order):
+                neighbors.append(blurry_order[pos + 1])
 
             if not neighbors:
                 kept[stage_id].extend(outgoing)
@@ -192,6 +202,7 @@ class ManifestStageSampler(ManifestStreamSampler):
         seed: int = 0,
         stage_blurry_n: int = 100,
         stage_blurry_m: int = 0,
+        stage_blurry_start_pos: int = 0,
     ) -> None:
         super().__init__(
             data_source,
@@ -201,6 +212,7 @@ class ManifestStageSampler(ManifestStreamSampler):
             seed=seed,
             stage_blurry_n=stage_blurry_n,
             stage_blurry_m=stage_blurry_m,
+            stage_blurry_start_pos=stage_blurry_start_pos,
         )
         self.indices = self.stage_indices
         self.task = self.stage_order[0]

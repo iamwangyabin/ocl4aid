@@ -36,10 +36,12 @@ used as class supervision and is not passed into `online_step`.
 
 The protocol treats each generator stage as a framework-level continual task,
 following the FlyGCL-style separation between stream structure and learner
-supervision. The trainer iterates through generator stages and may call method
-task-boundary hooks, but `online_step` receives only mini-batches of images and
-binary labels. Dataset indices, generator names, and protocol stage IDs are not
-passed into `online_step`.
+supervision. Stage 0 is treated as the supervised base stage. In the default
+protocol this stage is ProGAN, and the trainer runs it as conventional
+supervised base training before online continual learning begins at stage 1.
+The trainer may call method task-boundary hooks, but `online_step` receives
+only mini-batches of images and binary labels. Dataset indices, generator
+names, and protocol stage IDs are not passed into `online_step`.
 
 `task_num` is set to the number of protocol generator stages so prompt/expert
 methods can allocate one slot per framework task. The class supervision exposed
@@ -48,12 +50,20 @@ to the learner remains binary.
 `--online_iter` controls how many optimizer updates are run when a mini-batch
 arrives.
 
+`--base_stage_epochs` controls how many supervised epochs are run on stage 0
+before the online continual stream starts. The default is 1. Set it to 0 only
+when stage 0 should be included in the online continual stream instead.
+
 `--batchsize` is the global online exposure batch size, not a per-GPU batch
 size. In distributed training the trainer splits it evenly across ranks before
 building each local dataloader, so one synchronized online update still
 corresponds to the requested global number of newly exposed stream samples. The
 value must be divisible by `world_size`; otherwise training exits instead of
 silently changing the online setting.
+
+Temporal stage blur is controlled by `--stage_blurry_n`/`--stage_blurry_m` (or
+`--n`/`--m`). With the default base stage enabled, stage 0 remains a clean base
+stage and temporal blur is applied only to online stages from stage 1 onward.
 
 Periodic online evaluation uses framework-only stream offsets: by default the
 trainer evaluates every 20000 training samples using the full test slices for

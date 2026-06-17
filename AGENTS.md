@@ -61,6 +61,11 @@ python3 main.py \
   task IDs into `online_step`.
 - The protocol YAML controls generator task order and evaluation slices.
 - `online_step(images, labels, None)` is intentional.
+- Stage 0 is the supervised base stage. In the default protocol this is ProGAN.
+  Online continual learning starts from stage 1 unless `base_stage_epochs` is
+  set to 0.
+- When the base stage is enabled, temporal stage blur must start after stage 0
+  and must not leak samples into or out of the supervised base stage.
 - `batchsize` is the global online exposure batch size. In distributed training
   it must be split evenly across ranks and must not be treated as a per-GPU
   batch size.
