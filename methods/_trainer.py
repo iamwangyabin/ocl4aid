@@ -604,6 +604,17 @@ class _Trainer():
                 next_report_at += report_period
         return next_report_at
 
+    def _evaluate_and_log_stage(self, stage_id, stage_metrics):
+        if self.distributed:
+            dist.barrier()
+        if self.is_main_process():
+            stage_name = self.protocol_generator_order[stage_id]["generator_name"]
+            stage_metric = self._evaluate_protocol_stage(stage_id)
+            stage_metrics.append(stage_metric)
+            self._log_protocol_eval(stage_metric, stage_name)
+        if self.distributed:
+            dist.barrier()
+
     def _run_base_stage(self, stage_metrics, samples_cnt, num_report, report_period):
         base_stage_id = self._base_stage_id()
         if base_stage_id is None:
@@ -625,6 +636,7 @@ class _Trainer():
 
         for epoch in range(self.base_stage_epochs):
             logger.info("Base epoch %s/%s", epoch + 1, self.base_stage_epochs)
+            self.train_sampler.set_epoch(epoch)
             for images, labels, _idx in self.train_dataloader:
                 samples_cnt += images.size(0) * self.world_size
                 loss, acc = self.online_step(images, labels, None)
@@ -637,15 +649,7 @@ class _Trainer():
                 )
                 sys.stdout.flush()
 
-        if self.distributed:
-            dist.barrier()
-        if self.is_main_process():
-            stage_metric = self._evaluate_protocol_stage(base_stage_id)
-            stage_metrics.append(stage_metric)
-            self._log_protocol_eval(stage_metric, stage_name)
-        if self.distributed:
-            dist.barrier()
-
+        self._evaluate_and_log_stage(base_stage_id, stage_metrics)
         self.online_after_task(base_stage_id)
         return samples_cnt, num_report
 
@@ -708,16 +712,7 @@ class _Trainer():
                 self._maybe_run_stream_eval(stream_metrics)
                 sys.stdout.flush()
 
-            if self.distributed:
-                dist.barrier()
-            if self.is_main_process():
-                stage_name = self.protocol_generator_order[stage_id]["generator_name"]
-                stage_metric = self._evaluate_protocol_stage(stage_id)
-                stage_metrics.append(stage_metric)
-                self._log_protocol_eval(stage_metric, stage_name)
-            if self.distributed:
-                dist.barrier()
-
+            self._evaluate_and_log_stage(stage_id, stage_metrics)
             self.online_after_task(stage_id)
 
         self.phase = "done"

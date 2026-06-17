@@ -41,10 +41,12 @@ class ManifestStreamSampler(DistributedSampler):
 
         self.stage_order = sorted(int(stage_id) for stage_id in stage_indices)
         stage_indices = self._temporal_blurry_stage_indices(stage_indices)
-        self.stage_indices = {
-            stage_id: self._interleave_stage_indices(stage_id, list(stage_indices[stage_id]))
+        self._base_stage_indices = {
+            stage_id: list(stage_indices[stage_id])
             for stage_id in self.stage_order
         }
+        self.epoch = 0
+        self.stage_indices = self._build_epoch_stage_indices()
 
         self.ordered_indices = []
         self.stage_end_offsets = {}
@@ -144,6 +146,30 @@ class ManifestStreamSampler(DistributedSampler):
             for stage_id in self.stage_order
         }
 
+    def _build_epoch_stage_indices(self) -> dict[int, list[int]]:
+        return {
+            stage_id: self._interleave_stage_indices(
+                stage_id,
+                list(self._base_stage_indices[stage_id]),
+            )
+            for stage_id in self.stage_order
+        }
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+        self.stage_indices = self._build_epoch_stage_indices()
+        self.ordered_indices = []
+        self.stage_end_offsets = {}
+        offset = 0
+        for stage_id in self.stage_order:
+            indices = self.stage_indices[stage_id]
+            self.ordered_indices.extend(indices)
+            offset += len(indices)
+            self.stage_end_offsets[stage_id] = offset
+        if hasattr(self, "indices"):
+            self.indices = self.stage_indices
+            self._update_task_metadata()
+
     def _interleave_stage_indices(self, stage_id: int, indices: list[int]) -> list[int]:
         if len(indices) <= 1:
             return indices
@@ -153,7 +179,7 @@ class ManifestStreamSampler(DistributedSampler):
             label = int(self.targets[index])
             grouped.setdefault(label, []).append(index)
 
-        generator = torch.Generator().manual_seed(self.seed + stage_id)
+        generator = torch.Generator().manual_seed(self.seed + stage_id + self.epoch * 1_000_003)
         labels = sorted(grouped)
         label_perm = torch.randperm(len(labels), generator=generator).tolist()
         labels = [labels[i] for i in label_perm]

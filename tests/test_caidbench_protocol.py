@@ -256,6 +256,24 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
         self.assertTrue({origin(i) for i in sampler.indices[2]}.issubset({1, 2, 3}))
         self.assertTrue({origin(i) for i in sampler.indices[3]}.issubset({2, 3}))
 
+    def test_stage_sampler_epoch_reshuffles_without_changing_membership(self):
+        stage_indices = {
+            0: list(range(0, 20)),
+            1: list(range(20, 40)),
+        }
+        sampler = ManifestStageSampler(
+            _TinyStageDataset(40),
+            stage_indices,
+            seed=11,
+        )
+        first_epoch = list(sampler.indices[0])
+
+        sampler.set_epoch(1)
+        second_epoch = list(sampler.indices[0])
+
+        self.assertEqual(set(first_epoch), set(second_epoch))
+        self.assertNotEqual(first_epoch, second_epoch)
+
 
 if __name__ == "__main__":
     unittest.main()
