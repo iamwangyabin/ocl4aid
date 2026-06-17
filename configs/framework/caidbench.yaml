@@ -16,6 +16,7 @@ train:
   scheduler: default
   amp: true
   workers: 24
+  # Global online exposure batch size; DDP splits this evenly across ranks.
   batch_size: 16
   lr: 0.05
   online_iter: 1

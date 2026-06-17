@@ -97,8 +97,18 @@ class _Trainer():
         self.distributed = self.world_size > 1
         self.dist_backend = 'nccl'
         self.dist_url = 'env://'
+        self.global_batchsize = int(self.batchsize)
+        if self.global_batchsize <= 0:
+            raise ValueError(f"--batchsize must be positive, got {self.global_batchsize}")
         if self.distributed:
-            self.batchsize = self.batchsize // self.world_size
+            if self.global_batchsize % self.world_size != 0:
+                raise ValueError(
+                    "--batchsize is the global online batch size and must be "
+                    f"divisible by world_size={self.world_size}; got "
+                    f"{self.global_batchsize}."
+                )
+            self.batchsize = self.global_batchsize // self.world_size
+        self.local_batchsize = int(self.batchsize)
 
         run_name = self.note or self.method or "run"
         self.log_dir = os.path.join(self.log_path, run_name)
@@ -163,6 +173,8 @@ class _Trainer():
             "log_dir": self.log_dir,
             "world_size": self.world_size,
             "distributed": self.distributed,
+            "global_online_batchsize": self.global_batchsize,
+            "local_online_batchsize": self.local_batchsize,
             "swanlab_resolved_project": self.swanlab_project,
             "swanlab_resolved_experiment_name": self._swanlab_experiment_name(),
         })

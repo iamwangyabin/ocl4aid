@@ -48,6 +48,13 @@ to the learner remains binary.
 `--online_iter` controls how many optimizer updates are run when a mini-batch
 arrives.
 
+`--batchsize` is the global online exposure batch size, not a per-GPU batch
+size. In distributed training the trainer splits it evenly across ranks before
+building each local dataloader, so one synchronized online update still
+corresponds to the requested global number of newly exposed stream samples. The
+value must be divisible by `world_size`; otherwise training exits instead of
+silently changing the online setting.
+
 Periodic online evaluation uses framework-only stream offsets: by default the
 trainer evaluates every 20000 training samples using the full test slices for
 the generators that have appeared in the stream so far. These evaluations log

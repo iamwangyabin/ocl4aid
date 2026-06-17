@@ -61,6 +61,9 @@ python3 main.py \
   task IDs into `online_step`.
 - The protocol YAML controls generator task order and evaluation slices.
 - `online_step(images, labels, None)` is intentional.
+- `batchsize` is the global online exposure batch size. In distributed training
+  it must be split evenly across ranks and must not be treated as a per-GPU
+  batch size.
 - `task_num` should match the number of protocol generator stages so
   prompt/expert methods can allocate per-task slots. This must not change the
   binary class labels exposed to training.
