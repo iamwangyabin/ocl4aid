@@ -192,6 +192,77 @@ generator x method: accuracy / auc / forgetting
 This analysis should identify which generators are hardest and which earlier
 generators suffer the most forgetting.
 
+## Active Execution Plan
+
+Last updated: 2026-06-17 22:20 CST.
+
+The current remote run is the first core-method execution pass for the updated
+paper plan. It explicitly overrides the framework YAML defaults so that the
+paper common setup is used:
+
+```text
+commit = 5d144ac
+base_stage_epochs = 5
+backbone = vit_base_patch16_224
+online_iter = 1
+batchsize = 16
+eval_interval = 20000
+seeds = 1, 2, 3
+methods = flyprompt, l2p, dualprompt, codaprompt, mvp, ranpac
+```
+
+The earlier remote hard-boundary queues that used the YAML default
+`base_stage_epochs=1` were stopped before launching this plan. The old
+standalone A6000 flyprompt run and the old 4090-2 `caid-train sprompts` run
+were also stopped to free the GPUs. The CAIDBench rsync transfer from A6000 to
+4090-1 is still running and is not part of this experiment plan.
+
+Current machine assignment:
+
+| Machine | Stream setting | Queue/session | Methods | Data root |
+| --- | --- | --- | --- | --- |
+| `4090-2` | Main blurry, `n=50,m=20`, leakage 10% | `caid_mainblurry_base5_core_s1to3_20260617` | `flyprompt -> l2p -> dualprompt -> codaprompt -> mvp -> ranpac` | `/home/yabin/CAIDBench` |
+| `A6000` | Hard control, `n=100,m=0`, leakage 0% | `caid_hard_base5_core_s1to3_20260617` | `flyprompt -> l2p -> dualprompt -> codaprompt -> mvp -> ranpac` | `/home/home/yabin/CAIDBench` |
+
+Launcher script:
+
+```text
+scripts/launch_caid_experiment_queue.sh
+```
+
+Main blurry logs on `4090-2`:
+
+```text
+/home/yabin/ocl4aid/run_logs/caid_mainblurry_base5_core_s1to3_20260617/
+/home/yabin/ocl4aid/run_logs/caid_mainblurry_<method>_base5_s1-2-3_5d144ac/
+```
+
+Hard control logs on `A6000`:
+
+```text
+/home/home/yabin/ocl4aid/run_logs/caid_hard_base5_core_s1to3_20260617/
+/home/home/yabin/ocl4aid/run_logs/caid_hard_<method>_base5_s1-2-3_5d144ac/
+```
+
+Monitoring commands:
+
+```bash
+ssh 4090-2 "tail -n 80 /home/yabin/ocl4aid/run_logs/caid_mainblurry_base5_core_s1to3_20260617/launcher.log"
+ssh A6000 "tail -n 80 /home/home/yabin/ocl4aid/run_logs/caid_hard_base5_core_s1to3_20260617/launcher.log"
+ssh A6000 "tmux attach -t caid_hard_base5_core_s1to3_20260617"
+```
+
+After these queues finish, run the remaining planned stream-strength settings
+for the same core methods:
+
+```text
+Mild blurry    n=50, m=10, leakage=5%
+Strong blurry  n=50, m=40, leakage=20%
+```
+
+Then expand to the additional methods and seeds only after the core-method
+results are stable.
+
 ## Run Count
 
 Core-method development run:
@@ -263,4 +334,3 @@ python3 main.py \
   --note flyprompt_base5_blurry10_s5 \
   --no_swanlab
 ```
-
