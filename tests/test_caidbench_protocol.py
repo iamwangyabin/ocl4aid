@@ -7,7 +7,8 @@ import unittest
 
 from PIL import Image
 
-from datasets import CAIDBenchmarkProtocol, OnlineIterDataset
+from datasets import CAIDBenchmarkProtocol, ConditionalJPEGCompress, OnlineIterDataset, estimate_jpeg_quality
+from datasets.CAIDBenchmarkProtocol import _image_from_payload
 from utils.onlinesampler import ManifestStageSampler, ManifestStreamSampler
 
 
@@ -24,6 +25,12 @@ class _TinyStageDataset:
 def _png_bytes(color: tuple[int, int, int]) -> bytes:
     buffer = BytesIO()
     Image.new("RGB", (8, 8), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _jpeg_bytes(color: tuple[int, int, int], *, quality: int) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), color).save(buffer, format="JPEG", quality=quality)
     return buffer.getvalue()
 
 
@@ -155,6 +162,32 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
         self.assertEqual(image.size, (8, 8))
         self.assertEqual(target, 1)
         self.assertEqual(binary_target, 1)
+
+    def test_image_payload_preserves_jpeg_quality_metadata(self):
+        image = _image_from_payload({"bytes": _jpeg_bytes((80, 20, 10), quality=70)})
+
+        self.assertEqual(image.mode, "RGB")
+        self.assertEqual(getattr(image, "format", None), "JPEG")
+        quality = estimate_jpeg_quality(image)
+        self.assertIsNotNone(quality)
+        self.assertLessEqual(abs(quality - 70), 1)
+
+    def test_conditional_jpeg_compress_normalizes_test_quality(self):
+        transform = ConditionalJPEGCompress(quality=80, recompress_if_jpeg_quality_above=80)
+
+        low_quality = transform(_image_from_payload({"bytes": _jpeg_bytes((80, 20, 10), quality=70)}))
+        high_quality = transform(_image_from_payload({"bytes": _jpeg_bytes((80, 20, 10), quality=95)}))
+        png = transform(_image_from_payload({"bytes": _png_bytes((80, 20, 10))}))
+
+        low_estimate = estimate_jpeg_quality(low_quality)
+        high_estimate = estimate_jpeg_quality(high_quality)
+        png_estimate = estimate_jpeg_quality(png)
+        self.assertIsNotNone(low_estimate)
+        self.assertIsNotNone(high_estimate)
+        self.assertIsNotNone(png_estimate)
+        self.assertLessEqual(abs(low_estimate - 70), 1)
+        self.assertLessEqual(abs(high_estimate - 80), 1)
+        self.assertLessEqual(abs(png_estimate - 80), 1)
 
     def test_manifest_stream_sampler_flattens_protocol_without_task_switch_api(self):
         dataset = self._dataset(train=True)

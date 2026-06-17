@@ -9,6 +9,8 @@ import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
 
+from .image_quality import as_rgb_preserve_jpeg_metadata
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_PROTOCOL = _REPO_ROOT / "protocol_presets" / "caidbench" / "model_appearance_order_protocol.yaml"
@@ -317,8 +319,10 @@ def _image_from_payload(image_payload):
     elif isinstance(image_payload, (bytes, bytearray, memoryview)):
         image_bytes = bytes(image_payload)
     elif isinstance(image_payload, str):
-        return Image.open(image_payload).convert("RGB")
+        with Image.open(image_payload) as image:
+            return as_rgb_preserve_jpeg_metadata(image)
 
     if image_bytes is None:
         raise ValueError("Image payload does not contain bytes.")
-    return Image.open(BytesIO(image_bytes)).convert("RGB")
+    with Image.open(BytesIO(image_bytes)) as image:
+        return as_rgb_preserve_jpeg_metadata(image)

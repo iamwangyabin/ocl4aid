@@ -17,7 +17,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-from datasets import CAIDBenchmarkProtocol, OnlineIterDataset
+from datasets import CAIDBenchmarkProtocol, ConditionalJPEGCompress, OnlineIterDataset
 from protocol_metrics import (
     DETECTION_METRICS,
     StageMetrics,
@@ -331,6 +331,7 @@ class _Trainer():
             transforms.Normalize(mean, std),
         ])
         self.test_transform = transforms.Compose([
+            ConditionalJPEGCompress(quality=80, recompress_if_jpeg_quality_above=80),
             transforms.Resize((inp_size, inp_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean, std),
