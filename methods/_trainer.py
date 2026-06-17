@@ -742,6 +742,11 @@ class _Trainer():
     def _protocol_eval_logits(self, images):
         if self.method == "flyprompt":
             logit_raw = self.model_without_ddp.forward_with_rp(images)
+            expert_count = min(
+                int(getattr(self.model_without_ddp, "task_count", 0)) + 1,
+                logit_raw.size(1),
+            )
+            logit_raw = logit_raw[:, :expert_count]
             expert_ids = torch.argmax(logit_raw, dim=-1)
             logit_ls = self.model_without_ddp.forward_with_ema(images, expert_ids=expert_ids)
             logit_ls = [logit + self.mask for logit in logit_ls]
