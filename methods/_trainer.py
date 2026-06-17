@@ -18,7 +18,12 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 from datasets import CAIDBenchmarkProtocol, OnlineIterDataset
-from protocol_metrics import StageMetrics, compute_online_metrics
+from protocol_metrics import (
+    DETECTION_METRICS,
+    StageMetrics,
+    compute_binary_detection_metrics,
+    compute_online_metrics,
+)
 from utils.augment import Cutout
 from utils.onlinesampler import ManifestStageSampler
 from utils.train_utils import select_model, select_optimizer, select_scheduler
@@ -32,6 +37,32 @@ CAIDBENCH_STD = (0.229, 0.224, 0.225)
 CAIDBENCH_INPUT_SIZE = 224
 
 
+_LEARNER_KWARG_DENYLIST = {
+    "config",
+    "caidbench_data_dir",
+    "caidbench_protocol",
+    "caidbench_index_path",
+    "caidbench_image_column",
+    "eval_interval",
+    "batchsize",
+    "n_worker",
+    "log_path",
+    "note",
+    "seeds",
+    "rnd_seed",
+    "use_swanlab",
+    "swanlab_project",
+    "swanlab_workspace",
+    "swanlab_experiment_name",
+    "swanlab_description",
+    "swanlab_group",
+    "swanlab_tags",
+    "swanlab_mode",
+    "swanlab_logdir",
+    "swanlab_public",
+}
+
+
 class _Trainer():
     def __init__(self, *args, **kwargs) -> None:
 
@@ -39,31 +70,10 @@ class _Trainer():
         self.__dict__.update(kwargs)
 
         self.start_time = time.time()
-        self.base_epochs = int(getattr(self, "base_epochs", 1))
-        if self.base_epochs < 1:
-            raise ValueError(f"base_epochs must be >= 1, got {self.base_epochs}")
-        self.base_batchsize = getattr(self, "base_batchsize", None)
-        if self.base_batchsize is not None:
-            self.base_batchsize = int(self.base_batchsize)
-            if self.base_batchsize < 1:
-                raise ValueError(f"base_batchsize must be >= 1, got {self.base_batchsize}")
-
-        self._internal_session_methods = {"dualprompt", "mvp", "flyprompt"}
-        self.use_internal_online_scheduler = (
-            getattr(self, "method", None) in self._internal_session_methods
-        )
-
         self.eval_interval = int(getattr(self, "eval_interval", 20000) or 0)
 
         # These will be fully initialized once dataset size is known.
         self.phase = "init"
-        self.current_session = 0
-        self.current_session_seen_samples = 0
-        self.samples_per_session = None
-        self.internal_session_count = None
-        self.online_session_count = 0
-        self.base_stage_samples = 0
-        self.online_training_samples = 0
         self.online_samples_seen = 0
         self._next_stream_eval_at = self.eval_interval if self.eval_interval > 0 else None
         self._swanlab = None
@@ -71,6 +81,8 @@ class _Trainer():
         self._swanlab_enabled = False
         self._swanlab_atexit_registered = False
         self._swanlab_resolved_experiment_name = None
+        self._file_log_handler = None
+        self.train_log_path = None
 
         # Distributed training setup
         self.world_size = 1
@@ -85,8 +97,6 @@ class _Trainer():
         self.dist_url = 'env://'
         if self.distributed:
             self.batchsize = self.batchsize // self.world_size
-            if self.base_batchsize is not None:
-                self.base_batchsize = max(1, self.base_batchsize // self.world_size)
 
         run_name = self.note or self.method or "run"
         self.log_dir = os.path.join(self.log_path, run_name)
@@ -94,6 +104,43 @@ class _Trainer():
         os.makedirs(self.log_dir, exist_ok=True)
 
         return
+
+    def _init_file_logging(self):
+        if not self.is_main_process():
+            return
+
+        root_logger = logging.getLogger()
+        for handler in list(root_logger.handlers):
+            if getattr(handler, "_ocl4aid_train_file", False):
+                root_logger.removeHandler(handler)
+                handler.close()
+
+        self.train_log_path = os.path.join(self.log_dir, f"seed_{self.rnd_seed}_train.log")
+        formatter = None
+        if root_logger.handlers:
+            formatter = root_logger.handlers[0].formatter
+        if formatter is None:
+            formatter = logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d > %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+
+        handler = logging.FileHandler(self.train_log_path, mode="w", encoding="utf-8")
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(formatter)
+        handler._ocl4aid_train_file = True
+        root_logger.addHandler(handler)
+        self._file_log_handler = handler
+        logger.info("Writing training log to %s", self.train_log_path)
+
+    def _close_file_logging(self):
+        handler = getattr(self, "_file_log_handler", None)
+        if handler is None:
+            return
+        root_logger = logging.getLogger()
+        root_logger.removeHandler(handler)
+        handler.close()
+        self._file_log_handler = None
 
     def _sanitize_swanlab_value(self, value):
         if value is None or isinstance(value, (str, int, float, bool)):
@@ -284,7 +331,6 @@ class _Trainer():
             transform=self.load_transform,
             protocol_path=self.caidbench_protocol,
             index_path=self.caidbench_index_path,
-            label_mode=self.caidbench_label_mode,
             image_column=self.caidbench_image_column,
         )
         self.n_classes = len(self.train_dataset.label_space)
@@ -296,7 +342,6 @@ class _Trainer():
             transform=self.test_transform,
             protocol_path=self.caidbench_protocol,
             index_path=self.caidbench_index_path,
-            label_mode=self.caidbench_label_mode,
             image_column=self.caidbench_image_column,
         )
 
@@ -317,66 +362,41 @@ class _Trainer():
             num_workers=self.n_worker,
             persistent_workers=self.n_worker > 0,
         )
-        base_batchsize = self.base_batchsize or self.batchsize
-        self.base_train_dataloader = DataLoader(
-            self.online_iter_dataset,
-            batch_size=base_batchsize,
-            sampler=self.train_sampler,
-            pin_memory=False,
-            num_workers=self.n_worker,
-            persistent_workers=self.n_worker > 0,
-        )
         self.test_sampler = None
         self.protocol_stage_ids = list(self.train_dataset.active_stage_ids)
         if not self.protocol_stage_ids:
             raise ValueError("CAIDBenchmark protocol has no non-empty training stages.")
-        self.n_tasks = len(self.protocol_stage_ids)
+        self.protocol_stage_count = len(self.protocol_stage_ids)
+        self.n_tasks = self.protocol_stage_count
         self.protocol_generator_order = self.train_dataset.generator_order
-        self._resolve_internal_sessions_from_protocol()
+        self._log_protocol_stream_metadata()
 
         self.exposed_classes = []
         self.mask = torch.zeros(self.n_classes, device=self.device) - torch.inf
 
-    def _resolve_internal_sessions_from_protocol(self):
+    def _log_protocol_stream_metadata(self):
         stage_indices = getattr(self.train_dataset, "stage_indices", {})
-        self.base_stage_samples = len(stage_indices.get(self.protocol_stage_ids[0], []))
-        self.online_training_samples = sum(
+        stream_samples = sum(
             len(stage_indices.get(stage_id, []))
-            for stage_id in self.protocol_stage_ids[1:]
+            for stage_id in self.protocol_stage_ids
         )
-
-        if not self.use_internal_online_scheduler:
-            self.internal_session_count = self.n_tasks
-            self.online_session_count = max(self.n_tasks - 1, 0)
-            logger.info(
-                "Protocol stages: %s | base stage samples: %s | online samples: %s",
-                self.n_tasks,
-                self.base_stage_samples,
-                self.online_training_samples,
-            )
-            return
-
-        if self.n_tasks <= 1:
-            raise ValueError(
-                "Internal-session prompt methods require at least two sessions "
-                f"(base + online), got {self.n_tasks}."
-            )
-
-        self.internal_session_count = self.n_tasks
-        self.online_session_count = self.internal_session_count - 1
-
         logger.info(
-            "Protocol stages: %s | internal sessions: %s | base stage samples: %s | online samples: %s",
+            "Protocol stream | framework generator tasks: %s | learner labels: binary | task slots: %s | training samples: %s",
+            self.protocol_stage_count,
             self.n_tasks,
-            self.internal_session_count,
-            self.base_stage_samples,
-            self.online_training_samples,
+            stream_samples,
         )
 
     def setup_distributed_model(self):
 
         logger.info(f"Building model: {self.method}")
-        self.model = select_model(self.method, self.backbone, self.n_classes, self.n_tasks, self.kwargs).to(self.device)
+        logger.info(
+            "Learner-visible setup | num_classes=%s | task_slots=%s | protocol_stages=%s",
+            self.n_classes,
+            self.n_tasks,
+            getattr(self, "protocol_stage_count", None),
+        )
+        self.model = select_model(self.method, self.backbone, self.n_classes, self.n_tasks, self._learner_kwargs()).to(self.device)
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
         self.model.to(self.device)
@@ -399,6 +419,13 @@ class _Trainer():
         logger.info(learnables)
         logger.info("")
 
+    def _learner_kwargs(self):
+        return {
+            key: value
+            for key, value in self.kwargs.items()
+            if key not in _LEARNER_KWARG_DENYLIST
+        }
+
     def run(self):
         if self.profile:
             self.profile_worker(0)
@@ -409,130 +436,109 @@ class _Trainer():
             else:
                 self.main_worker(0)
 
-    def _init_internal_session_scheduler(self):
-        """Initialize task-free internal session schedule for the online phase."""
-        if not self.use_internal_online_scheduler:
-            return
-        if self.internal_session_count <= 1:
-            raise ValueError(f"internal_session_count must be > 1, got {self.internal_session_count}")
-
-        online_total = int(getattr(self, "online_training_samples", 0))
-        if online_total <= 0:
-            return
-
-        self.samples_per_session = max(1, online_total // self.online_session_count)
-        self.current_session = 0
-        self.current_session_seen_samples = 0
-        logger.info(
-            "Online internal-session scheduler: %s online samples / %s online sessions -> %s samples per session",
-            online_total,
-            self.online_session_count,
-            self.samples_per_session,
-        )
-
-    def _model_for_internal_session_update(self):
-        model_obj = getattr(self, "model_without_ddp", None)
-        if model_obj is None:
-            model_obj = getattr(self, "model", None)
-        return model_obj
-
-    def _advance_model_internal_session(self):
-        model_obj = self._model_for_internal_session_update()
-        if model_obj is not None and hasattr(model_obj, "process_task_count"):
-            model_obj.process_task_count()
-
-    def _start_online_internal_session(self):
-        if not self.use_internal_online_scheduler:
-            return
-        if self.internal_session_count <= 1:
-            return
-        if self.current_session != 0:
-            return
-        self.current_session = 1
-        self.current_session_seen_samples = 0
-        self._advance_model_internal_session()
-        logger.info("Internal session advanced after base: 0 -> 1")
-
-    def _maybe_advance_internal_session(self, batch_size: int):
-        """Advance online internal session counter based only on seen samples."""
-        if not self.use_internal_online_scheduler:
-            return
-        if getattr(self, "phase", None) != "online":
-            return
-        if getattr(self, "samples_per_session", None) is None:
-            return
-        if self.internal_session_count <= 1 or batch_size <= 0:
-            return
-
-        self.current_session_seen_samples += batch_size
-        while (
-            self.current_session < self.internal_session_count - 1
-            and self.current_session_seen_samples >= self.samples_per_session
-        ):
-            self.current_session_seen_samples -= self.samples_per_session
-            self.current_session += 1
-            self._advance_model_internal_session()
-            logger.info("Internal session advanced by online samples: %s", self.current_session)
-
-    def _protocol_eval_average(self, stage_metric: StageMetrics) -> float:
-        if not stage_metric.internal_accuracy_by_generator:
-            return 0.0
-        return (
-            sum(stage_metric.internal_accuracy_by_generator.values())
-            / len(stage_metric.internal_accuracy_by_generator)
-        )
+    def _protocol_eval_average(self, stage_metric: StageMetrics, metric_name="accuracy"):
+        values = [
+            metrics.get(metric_name)
+            for metrics in stage_metric.internal_metrics_by_generator.values()
+            if metrics.get(metric_name) is not None
+        ]
+        if not values:
+            return 0.0 if metric_name in {"accuracy", "f1"} else None
+        return sum(values) / len(values)
 
     def _protocol_metric_payload(self, stage_metric: StageMetrics):
         return {
             "stage_id": stage_metric.stage_id,
             "new_generators": stage_metric.new_generators,
+            "internal_metrics_by_generator": stage_metric.internal_metrics_by_generator,
+            "external_metrics_by_subset": stage_metric.external_metrics_by_subset,
             "internal_accuracy_by_generator": stage_metric.internal_accuracy_by_generator,
             "external_accuracy_by_subset": stage_metric.external_accuracy_by_subset,
         }
 
+    def _format_metric_value(self, value):
+        return "n/a" if value is None else f"{value:.4f}"
+
     def _log_protocol_eval(self, stage_metric: StageMetrics, stage_name: str, *, stream_sample=None):
-        internal_avg = self._protocol_eval_average(stage_metric)
-        current_acc = stage_metric.internal_accuracy_by_generator.get(stage_name, 0.0)
+        internal_avg = {
+            metric_name: self._protocol_eval_average(stage_metric, metric_name)
+            for metric_name in DETECTION_METRICS
+        }
+        current_metrics = stage_metric.internal_metrics_by_generator.get(stage_name, {})
+        current_by_metric = {
+            metric_name: current_metrics.get(metric_name)
+            for metric_name in DETECTION_METRICS
+        }
         if stream_sample is None:
             logger.info(
-                "Protocol Eval | stage %s | avg_internal_acc %.4f | plasticity %.4f",
+                "Protocol Eval | stage %s | avg acc %s | f1 %s | ap %s | auc %s | current acc %s | f1 %s | ap %s | auc %s",
                 stage_metric.stage_id,
-                internal_avg,
-                current_acc,
+                self._format_metric_value(internal_avg["accuracy"]),
+                self._format_metric_value(internal_avg["f1"]),
+                self._format_metric_value(internal_avg["ap"]),
+                self._format_metric_value(internal_avg["auc"]),
+                self._format_metric_value(current_by_metric["accuracy"]),
+                self._format_metric_value(current_by_metric["f1"]),
+                self._format_metric_value(current_by_metric["ap"]),
+                self._format_metric_value(current_by_metric["auc"]),
             )
             prefix = "protocol"
             step = stage_metric.stage_id
         else:
             logger.info(
-                "Protocol Stream Eval | online_sample %s | stage %s | avg_internal_acc %.4f | plasticity %.4f",
+                "Protocol Stream Eval | online_sample %s | stage %s | avg acc %s | f1 %s | ap %s | auc %s | current acc %s | f1 %s | ap %s | auc %s",
                 stream_sample,
                 stage_metric.stage_id,
-                internal_avg,
-                current_acc,
+                self._format_metric_value(internal_avg["accuracy"]),
+                self._format_metric_value(internal_avg["f1"]),
+                self._format_metric_value(internal_avg["ap"]),
+                self._format_metric_value(internal_avg["auc"]),
+                self._format_metric_value(current_by_metric["accuracy"]),
+                self._format_metric_value(current_by_metric["f1"]),
+                self._format_metric_value(current_by_metric["ap"]),
+                self._format_metric_value(current_by_metric["auc"]),
             )
             prefix = "protocol_stream"
             step = stream_sample
 
         swanlab_metrics = {
             f"{prefix}/stage": stage_metric.stage_id,
-            f"{prefix}/internal_avg_acc": internal_avg,
-            f"{prefix}/current_generator_acc": current_acc,
+            f"{prefix}/internal_avg_acc": internal_avg["accuracy"],
+            f"{prefix}/current_generator_acc": current_by_metric["accuracy"],
         }
-        for generator_name, score in stage_metric.internal_accuracy_by_generator.items():
-            swanlab_metrics[f"{prefix}/internal/{self._metric_slug(generator_name)}"] = score
+        for metric_name, score in internal_avg.items():
+            swanlab_metrics[f"{prefix}/internal_avg_{metric_name}"] = score
+        for metric_name, score in current_by_metric.items():
+            swanlab_metrics[f"{prefix}/current_generator_{metric_name}"] = score
+        for generator_name, generator_metrics in stage_metric.internal_metrics_by_generator.items():
+            generator_slug = self._metric_slug(generator_name)
+            swanlab_metrics[f"{prefix}/internal/{generator_slug}"] = generator_metrics.get("accuracy")
+            for metric_name, score in generator_metrics.items():
+                swanlab_metrics[f"{prefix}/internal/{generator_slug}/{metric_name}"] = score
         self._log_swanlab(swanlab_metrics, step=step)
 
-    def _maybe_run_stream_eval(self, stage_id: int, stream_metrics):
+    def _stage_id_for_seen_samples(self, sample_count: int) -> int:
+        stage_end_offsets = getattr(self.train_sampler, "stage_end_offsets", None)
+        if not stage_end_offsets:
+            return self.protocol_stage_ids[-1]
+        for stage_id in self.protocol_stage_ids:
+            end_offset = stage_end_offsets.get(stage_id)
+            if end_offset is not None and sample_count <= end_offset:
+                return stage_id
+        return self.protocol_stage_ids[-1]
+
+    def _maybe_run_stream_eval(self, stream_metrics):
         if self.eval_interval <= 0 or self._next_stream_eval_at is None:
             return
 
         while self.online_samples_seen >= self._next_stream_eval_at:
             stream_sample = self._next_stream_eval_at
+            eval_stage_id = self._stage_id_for_seen_samples(stream_sample)
             if self.distributed:
                 dist.barrier()
             if self.is_main_process():
-                stage_name = self.protocol_generator_order[stage_id]["generator_name"]
-                stage_metric = self._evaluate_protocol_stage(stage_id)
+                stage_name = self.protocol_generator_order[eval_stage_id]["generator_name"]
+                stage_metric = self._evaluate_protocol_stage(eval_stage_id)
                 self._log_protocol_eval(stage_metric, stage_name, stream_sample=stream_sample)
                 stream_payload = self._protocol_metric_payload(stage_metric)
                 stream_payload["online_sample"] = stream_sample
@@ -542,46 +548,46 @@ class _Trainer():
             self._next_stream_eval_at += self.eval_interval
 
     def _run_protocol_loop(self):
-        logger.info(f"[2] Incrementally training protocol stages ({self.n_tasks})")
+        logger.info(
+            "[2] Incrementally training protocol generator tasks (%s stages, binary labels)",
+            self.protocol_stage_count,
+        )
         samples_cnt = 0
         num_report = 2000
         report_period = 500
         stage_metrics = []
         stream_metrics = []
+        self.phase = "stream"
 
         for task_pos, stage_id in enumerate(self.protocol_stage_ids):
             stage_name = self.protocol_generator_order[stage_id]["generator_name"]
             logger.info("\n")
             logger.info("#" * 50)
-            logger.info(f"# Stage {stage_id}: {stage_name}")
+            logger.info("# Stage %s/%s: %s", task_pos + 1, self.protocol_stage_count, stage_name)
             logger.info("#" * 50 + "\n")
 
-            self.phase = "base" if task_pos == 0 else "online"
             self.train_sampler.set_task(stage_id)
             self.online_before_task(stage_id)
-            stage_epochs = self.base_epochs if task_pos == 0 else 1
-            if task_pos == 0:
-                logger.info(f"Base session epochs: {stage_epochs} | batch_size {self.base_batchsize or self.batchsize}")
-            else:
-                logger.info(f"Online stage: single pass | batch_size {self.batchsize}")
-            train_dataloader = self.base_train_dataloader if task_pos == 0 else self.train_dataloader
-            for epoch in range(stage_epochs):
-                logger.info(f"Pass {epoch + 1}/{stage_epochs}")
-                for images, labels, idx in train_dataloader:
-                    batch_size_global = images.size(0) * self.world_size
-                    samples_cnt += batch_size_global
-                    loss, acc = self.online_step(images, labels, idx)
-                    if samples_cnt >= num_report:
-                        self.report_training(samples_cnt, loss, acc)
-                        num_report += report_period
-                    if self.phase == "online":
-                        self.online_samples_seen += batch_size_global
-                        self._maybe_run_stream_eval(stage_id, stream_metrics)
-                    sys.stdout.flush()
+
+            for images, labels, _idx in self.train_dataloader:
+                batch_size_global = images.size(0) * self.world_size
+                samples_cnt += batch_size_global
+                self.online_samples_seen = samples_cnt
+
+                # Framework stages are task boundaries, but the learner still
+                # receives only images and binary labels.
+                loss, acc = self.online_step(images, labels, None)
+                if samples_cnt >= num_report:
+                    self.report_training(samples_cnt, loss, acc)
+                    num_report += report_period
+
+                self._maybe_run_stream_eval(stream_metrics)
+                sys.stdout.flush()
 
             if self.distributed:
                 dist.barrier()
             if self.is_main_process():
+                stage_name = self.protocol_generator_order[stage_id]["generator_name"]
                 stage_metric = self._evaluate_protocol_stage(stage_id)
                 stage_metrics.append(stage_metric)
                 self._log_protocol_eval(stage_metric, stage_name)
@@ -589,35 +595,36 @@ class _Trainer():
                 dist.barrier()
 
             self.online_after_task(stage_id)
-            if task_pos == 0:
-                self._start_online_internal_session()
-                self._save_base_checkpoint(stage_id)
 
         self.phase = "done"
-        if self.is_main_process():
-            metrics = compute_online_metrics(stage_metrics)
-            summary = {
-                "stage_metrics": [
-                    self._protocol_metric_payload(item)
-                    for item in stage_metrics
-                ],
-                "stream_metrics": stream_metrics,
-                "metrics": metrics,
-            }
-            output_path = os.path.join(self.log_dir, f"seed_{self.rnd_seed}_ocl_metrics.json")
-            with open(output_path, "w", encoding="utf-8") as handle:
-                json.dump(summary, handle, indent=2, sort_keys=True)
-            logger.info("Saved protocol metrics to %s", output_path)
-            if stage_metrics:
-                last_stage_id = stage_metrics[-1].stage_id
-                final_metrics = {}
-                for key, values_by_stage in metrics.items():
-                    if not isinstance(values_by_stage, dict):
-                        continue
-                    value = values_by_stage.get(last_stage_id)
-                    if isinstance(value, (int, float, np.generic)) and value is not None:
-                        final_metrics[f"protocol/final/{self._metric_slug(key)}"] = value
-                self._log_swanlab(final_metrics, step=last_stage_id)
+        self._save_protocol_summary(stage_metrics, stream_metrics)
+
+    def _save_protocol_summary(self, stage_metrics, stream_metrics):
+        if not self.is_main_process():
+            return
+        metrics = compute_online_metrics(stage_metrics)
+        summary = {
+            "stage_metrics": [
+                self._protocol_metric_payload(item)
+                for item in stage_metrics
+            ],
+            "stream_metrics": stream_metrics,
+            "metrics": metrics,
+        }
+        output_path = os.path.join(self.log_dir, f"seed_{self.rnd_seed}_ocl_metrics.json")
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump(summary, handle, indent=2, sort_keys=True)
+        logger.info("Saved protocol metrics to %s", output_path)
+        if stage_metrics:
+            last_stage_id = stage_metrics[-1].stage_id
+            final_metrics = {}
+            for key, values_by_stage in metrics.items():
+                if not isinstance(values_by_stage, dict):
+                    continue
+                value = values_by_stage.get(last_stage_id)
+                if isinstance(value, (int, float, np.generic)) and value is not None:
+                    final_metrics[f"protocol/final/{self._metric_slug(key)}"] = value
+            self._log_swanlab(final_metrics, step=last_stage_id)
 
     def _expected_training_samples(self):
         if not hasattr(self, "train_dataset") or not hasattr(self, "protocol_stage_ids"):
@@ -625,57 +632,10 @@ class _Trainer():
         stage_indices = getattr(self.train_dataset, "stage_indices", {})
         if not self.protocol_stage_ids:
             return sum(len(indices) for indices in stage_indices.values())
-        base_stage_id = self.protocol_stage_ids[0]
-        base_count = len(stage_indices.get(base_stage_id, []))
-        online_count = sum(
+        return sum(
             len(stage_indices.get(stage_id, []))
-            for stage_id in self.protocol_stage_ids[1:]
+            for stage_id in self.protocol_stage_ids
         )
-        return self.base_epochs * base_count + online_count
-
-    def _move_checkpoint_state_to_cpu(self, value):
-        if isinstance(value, torch.Tensor):
-            return value.detach().cpu()
-        if isinstance(value, dict):
-            return {key: self._move_checkpoint_state_to_cpu(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [self._move_checkpoint_state_to_cpu(item) for item in value]
-        if isinstance(value, tuple):
-            return tuple(self._move_checkpoint_state_to_cpu(item) for item in value)
-        return value
-
-    def _save_base_checkpoint(self, stage_id: int):
-        if not self.is_main_process():
-            return
-
-        checkpoint_path = os.path.join(self.log_dir, f"seed_{self.rnd_seed}_after_base_task.pt")
-        model_state = self._move_checkpoint_state_to_cpu(self.model_without_ddp.state_dict())
-        optimizer_state = self._move_checkpoint_state_to_cpu(self.optimizer.state_dict())
-        scaler_state = self._move_checkpoint_state_to_cpu(self.scaler.state_dict())
-
-        payload = {
-            "stage_id": int(stage_id),
-            "seed": self.rnd_seed,
-            "method": self.method,
-            "backbone": self.backbone,
-            "n_classes": self.n_classes,
-            "n_tasks": self.n_tasks,
-            "exposed_classes": list(self.exposed_classes),
-            "mask": self.mask.detach().cpu(),
-            "model_state": model_state,
-            "optimizer_state": optimizer_state,
-            "scheduler_state": self.scheduler.state_dict(),
-            "scaler_state": scaler_state,
-            "current_session": getattr(self, "current_session", None),
-            "current_session_seen_samples": getattr(self, "current_session_seen_samples", None),
-            "samples_per_session": getattr(self, "samples_per_session", None),
-            "base_epochs": self.base_epochs,
-            "batchsize": self.batchsize,
-            "base_batchsize": self.base_batchsize,
-            "config": self._swanlab_config(),
-        }
-        torch.save(payload, checkpoint_path)
-        logger.info("Saved base checkpoint to %s", checkpoint_path)
 
     def _evaluate_protocol_stage(self, stage_id: int) -> StageMetrics:
         self.model.eval()
@@ -697,8 +657,8 @@ class _Trainer():
 
         return StageMetrics(
             stage_id=stage_id,
-            internal_accuracy_by_generator=internal_scores,
-            external_accuracy_by_subset={},
+            internal_metrics_by_generator=internal_scores,
+            external_metrics_by_subset={},
             new_generators=(
                 [current_generator] if current_generator in stage_generators else []
             ),
@@ -724,20 +684,36 @@ class _Trainer():
             shuffle=False,
             num_workers=self.n_worker,
         )
-        total_correct = 0
-        total_num = 0
+        binary_predictions = []
+        binary_target_values = []
+        fake_scores = []
         with torch.no_grad():
             for images, _targets, binary_targets in loader:
                 images = images.to(self.device)
                 logits = self._protocol_eval_logits(images)
                 pred_indices = torch.argmax(logits, dim=-1).detach().cpu().tolist()
-                binary_targets = binary_targets.tolist()
-                for pred_index, binary_target in zip(pred_indices, binary_targets):
+                batch_fake_scores = self._protocol_fake_scores(logits).detach().cpu().tolist()
+                binary_targets = [int(item) for item in binary_targets.tolist()]
+                for pred_index in pred_indices:
                     original_class = self.exposed_classes[pred_index]
-                    pred_binary = 0 if original_class == 0 else 1
-                    total_correct += int(pred_binary == binary_target)
-                    total_num += 1
-        return total_correct / total_num if total_num > 0 else 0.0
+                    binary_predictions.append(0 if original_class == 0 else 1)
+                binary_target_values.extend(binary_targets)
+                fake_scores.extend(batch_fake_scores)
+        return compute_binary_detection_metrics(
+            binary_target_values,
+            binary_predictions,
+            fake_scores,
+        )
+
+    def _protocol_fake_scores(self, logits):
+        probabilities = torch.softmax(logits, dim=-1)
+        fake_class_mask = torch.zeros(logits.size(-1), dtype=torch.bool, device=logits.device)
+        for logit_index, original_class in enumerate(self.exposed_classes[: logits.size(-1)]):
+            if original_class != 0:
+                fake_class_mask[logit_index] = True
+        if not torch.any(fake_class_mask):
+            return torch.zeros(logits.size(0), dtype=probabilities.dtype, device=logits.device)
+        return probabilities[:, fake_class_mask].sum(dim=-1)
 
     def _protocol_eval_logits(self, images):
         if self.method == "flyprompt":
@@ -817,36 +793,36 @@ class _Trainer():
                                     world_size=self.world_size, rank=self.rank)
             torch.distributed.barrier()
             self.setup_for_distributed(self.is_main_process())
-        else:
-            pass
+        self._init_file_logging()
+        try:
+            if self.rnd_seed is not None:
+                random.seed(self.rnd_seed)
+                np.random.seed(self.rnd_seed)
+                torch.manual_seed(self.rnd_seed)
+                torch.cuda.manual_seed(self.rnd_seed)
+                torch.cuda.manual_seed_all(self.rnd_seed) # if use multi-GPU
+                cudnn.deterministic = True
+                logger.info(
+                    'You have chosen to seed training. '
+                    'This will turn on the CUDNN deterministic setting, '
+                    'which can slow down your training considerably! '
+                    'You may see unexpected behavior when restarting '
+                    'from checkpoints.'
+                )
+            cudnn.benchmark = False
+            self._init_swanlab()
 
-        if self.rnd_seed is not None:
-            random.seed(self.rnd_seed)
-            np.random.seed(self.rnd_seed)
-            torch.manual_seed(self.rnd_seed)
-            torch.cuda.manual_seed(self.rnd_seed)
-            torch.cuda.manual_seed_all(self.rnd_seed) # if use multi-GPU
-            cudnn.deterministic = True
-            logger.info(
-                'You have chosen to seed training. '
-                'This will turn on the CUDNN deterministic setting, '
-                'which can slow down your training considerably! '
-                'You may see unexpected behavior when restarting '
-                'from checkpoints.'
-            )
-        cudnn.benchmark = False
-        self._init_swanlab()
+            self.setup_distributed_dataset()
+            self.total_samples = len(self.train_dataset)
+            self.total_training_samples = self._expected_training_samples()
 
-        self.setup_distributed_dataset()
-        self.total_samples = len(self.train_dataset)
-        self.total_training_samples = self._expected_training_samples()
-        self._init_internal_session_scheduler()
+            logger.info(f"[1] Select a GCL method ({self.method})")
+            self.setup_distributed_model()
 
-        logger.info(f"[1] Select a GCL method ({self.method})")
-        self.setup_distributed_model()
-
-        self._run_protocol_loop()
-        self._finish_swanlab()
+            self._run_protocol_loop()
+        finally:
+            self._finish_swanlab()
+            self._close_file_logging()
 
     def profile_worker(self, gpu) -> None:
         # ============ Toy experiment setup ============
@@ -869,36 +845,33 @@ class _Trainer():
                                     world_size=self.world_size, rank=self.rank)
             torch.distributed.barrier()
             self.setup_for_distributed(self.is_main_process())
-        else:
-            pass
+        self._init_file_logging()
+        try:
+            if self.rnd_seed is not None:
+                random.seed(self.rnd_seed)
+                np.random.seed(self.rnd_seed)
+                torch.manual_seed(self.rnd_seed)
+                torch.cuda.manual_seed(self.rnd_seed)
+                torch.cuda.manual_seed_all(self.rnd_seed) # if use multi-GPU
+                cudnn.deterministic = True
+            cudnn.benchmark = False
+            self._init_swanlab()
 
-        if self.rnd_seed is not None:
-            random.seed(self.rnd_seed)
-            np.random.seed(self.rnd_seed)
-            torch.manual_seed(self.rnd_seed)
-            torch.cuda.manual_seed(self.rnd_seed)
-            torch.cuda.manual_seed_all(self.rnd_seed) # if use multi-GPU
-            cudnn.deterministic = True
-        cudnn.benchmark = False
-        self._init_swanlab()
+            self.setup_distributed_dataset()
+            self.total_samples = len(self.train_dataset)
+            self.total_training_samples = self._expected_training_samples()
 
-        self.setup_distributed_dataset()
-        self.total_samples = len(self.train_dataset)
-        self.total_training_samples = self._expected_training_samples()
-        self._init_internal_session_scheduler()
+            self.setup_distributed_model()
 
-        self.setup_distributed_model()
-
-        samples_cnt = 0
-        self.train_sampler.set_task(0)
-        self.online_before_task(0)
-        for i, (images, labels, idx) in enumerate(self.train_dataloader):
-            samples_cnt += images.size(0) * self.world_size
-            loss, acc = self.online_step(images, labels, idx)
-            self.report_training(samples_cnt, loss, acc)
-            break
-        self.online_after_task(0)
-        self._finish_swanlab()
+            samples_cnt = 0
+            for i, (images, labels, idx) in enumerate(self.train_dataloader):
+                samples_cnt += images.size(0) * self.world_size
+                loss, acc = self.online_step(images, labels, None)
+                self.report_training(samples_cnt, loss, acc)
+                break
+        finally:
+            self._finish_swanlab()
+            self._close_file_logging()
 
     def add_new_class(self, class_name):
         exposed_classes = []
@@ -921,11 +894,53 @@ class _Trainer():
     def online_step(self, images, labels, idx):
         raise NotImplementedError()
 
+    def _advance_model_task_count(self):
+        model_obj = self.model.module if self.distributed else self.model
+        if hasattr(model_obj, "process_task_count"):
+            model_obj.process_task_count()
+
+    @torch.no_grad()
+    def _collect_rp_features_for_task_slot(self, images, labels):
+        """Collect backbone CLS features for RPFC task-slot gating."""
+        model_obj = self.model_without_ddp
+        use_rp_gate = getattr(model_obj, "use_rp_gate", False)
+        rp_head = getattr(model_obj, "rp_head", None)
+        if not use_rp_gate or rp_head is None:
+            return
+
+        images = images.to(self.device, non_blocking=True)
+        images = self.test_transform_tensor(images)
+
+        model_obj.backbone.eval()
+        if hasattr(model_obj.backbone, "forward_features"):
+            feats = model_obj.backbone.forward_features(images)
+            if isinstance(feats, (list, tuple)):
+                feats = feats[0]
+            cls_feat = feats[:, 0]
+        else:
+            x = model_obj.backbone.patch_embed(images)
+            batch_size = x.size(0)
+            cls_token = model_obj.backbone.cls_token.expand(batch_size, -1, -1)
+            token_appended = torch.cat((cls_token, x), dim=1)
+            x = model_obj.backbone.pos_drop(token_appended + model_obj.backbone.pos_embed)
+            x = model_obj.backbone.blocks(x)
+            x = model_obj.backbone.norm(x)
+            cls_feat = x[:, 0]
+
+        session_id = int(getattr(model_obj, "task_count", getattr(self, "task_id", 0)))
+        session_labels = torch.full(
+            (labels.size(0),),
+            session_id,
+            device=self.device,
+            dtype=torch.long,
+        )
+        rp_head.collect(cls_feat, session_labels)
+
     def online_before_task(self, task_id):
-        raise NotImplementedError()
+        del task_id
 
     def online_after_task(self, task_id):
-        raise NotImplementedError()
+        del task_id
 
     def update_schedule(self, reset=False):
         if reset:

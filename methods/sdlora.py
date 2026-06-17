@@ -1,5 +1,3 @@
-import gc
-
 import torch
 
 from methods._trainer import _Trainer
@@ -22,8 +20,6 @@ class SDLoRAGCL(_Trainer):
             _acc += acc
             _iter += 1
 
-        del images, labels
-        gc.collect()
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
@@ -78,9 +74,8 @@ class SDLoRAGCL(_Trainer):
 
         return logit, loss
 
-    def online_before_task(self, task_id):
-        pass
-
     def online_after_task(self, cur_iter):
-        self.model_without_ddp.process_task_count()
+        del cur_iter
+        if self.task_id + 1 < getattr(self, "n_tasks", 1):
+            self._advance_model_task_count()
         self.task_id += 1

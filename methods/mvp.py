@@ -1,6 +1,5 @@
 import copy
 import datetime
-import gc
 import logging
 import time
 
@@ -25,54 +24,6 @@ class MVP(_Trainer):
         self.margin  = 0.5
 
         self.task_id = 0
-    @torch.no_grad()
-    def _collect_rp_features(self, images, labels):
-        """Collect features for RPFC gating (if enabled).
-
-        Uses backbone CLS features and current internal session id as regression
-        targets, following the FlyPrompt RPFC design.
-        """
-        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
-        rp_head = getattr(self.model_without_ddp, "rp_head", None)
-        if not use_rp_gate or rp_head is None:
-            return
-
-        # Map labels to seen-class indices, consistent with training.
-        for j in range(len(labels)):
-            labels[j] = self.exposed_classes.index(labels[j].item())
-
-        images = images.to(self.device, non_blocking=True)
-        labels = labels.to(self.device)
-
-        images = self.test_transform_tensor(images)
-
-        self.model_without_ddp.backbone.eval()
-        if hasattr(self.model_without_ddp.backbone, "forward_features"):
-            feats = self.model_without_ddp.backbone.forward_features(images)
-            if isinstance(feats, (list, tuple)):
-                feats = feats[0]
-            cls_feat = feats[:, 0]
-        else:
-            x = self.model_without_ddp.backbone.patch_embed(images)
-            B, N, D = x.size()
-            cls_token = self.model_without_ddp.backbone.cls_token.expand(B, -1, -1)
-            token_appended = torch.cat((cls_token, x), dim=1)
-            x = self.model_without_ddp.backbone.pos_drop(token_appended + self.model_without_ddp.backbone.pos_embed)
-            x = self.model_without_ddp.backbone.blocks(x)
-            x = self.model_without_ddp.backbone.norm(x)
-            cls_feat = x[:, 0]
-
-        session_id = getattr(self, "current_session", 0)
-        session_labels = torch.full(
-            (labels.size(0),),
-            session_id,
-            device=labels.device,
-            dtype=torch.long,
-        )
-        self.model_without_ddp.rp_head.collect(cls_feat, session_labels)
-
-
-
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
         # train with augmented batches
@@ -84,18 +35,8 @@ class MVP(_Trainer):
             _acc += acc
             _iter += 1
 
-        # Collect RPFC features once per online update (per internal session), using
-        # the original images/labels (before deletion).
-        self._collect_rp_features(images.clone(), labels.clone())
+        self._collect_rp_features_for_task_slot(images.clone(), labels)
 
-        # Update internal session schedule based only on the number of samples
-        # seen during the online phase.
-        if hasattr(self, "_maybe_advance_internal_session"):
-            batch_size_global = images.size(0) * self.world_size
-            self._maybe_advance_internal_session(batch_size_global)
-
-        del (images, labels)
-        gc.collect()
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
@@ -181,16 +122,15 @@ class MVP(_Trainer):
         else:
             raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
 
-    def online_before_task(self, task_id):
-        pass
-
     def online_after_task(self, cur_iter):
         """Hook called after each benchmark task.
 
-        We keep ``task_id`` for task bookkeeping only; the underlying model's
-        internal session state is advanced exclusively via the task-free
-        online scheduler.
+        Framework stages define generator-level tasks while training labels
+        remain binary. Advance prompt/task slots between stages.
         """
+        del cur_iter
+        if self.task_id + 1 < getattr(self, "n_tasks", 1):
+            self._advance_model_task_count()
         self.task_id += 1
 
     def _compute_grads(self, feature, y, mask):

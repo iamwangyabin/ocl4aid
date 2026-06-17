@@ -1,4 +1,3 @@
-import gc
 from typing import Dict, List
 
 import torch
@@ -142,8 +141,6 @@ class SPrompt(_Trainer):
             self._append_cur_task_features(feats)
             self._collect_rp_features(images.clone(), labels.clone())
 
-        del images, labels
-        gc.collect()
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
@@ -207,10 +204,11 @@ class SPrompt(_Trainer):
         self._cur_task_features = []
 
     def online_after_task(self, task_id):
+        del task_id
         # advance model task counter and clear feature buffer for this task
-        self.model_without_ddp.process_task_count()
+        if self.task_id + 1 < getattr(self, "n_tasks", 1):
+            self._advance_model_task_count()
         self._cur_task_features = []
-        gc.collect()
 
     def _ensemble_logits(self, logit_ls):
         """Ensemble a list of logits from online and EMA heads.

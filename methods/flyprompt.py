@@ -1,5 +1,3 @@
-import gc
-
 import torch
 
 from methods._trainer import _Trainer
@@ -24,14 +22,6 @@ class FlyPrompt(_Trainer):
 
         self.collect(images.clone(), labels.clone())
 
-        # Update internal session schedule based only on the number of samples
-        # seen during the online phase.
-        if hasattr(self, "_maybe_advance_internal_session"):
-            batch_size_global = images.size(0) * self.world_size
-            self._maybe_advance_internal_session(batch_size_global)
-
-        del images, labels
-        gc.collect()
         return _loss / _iter, _acc / _iter
 
     def collect(self, images, labels):
@@ -80,7 +70,7 @@ class FlyPrompt(_Trainer):
         self.update_schedule()
 
         # Update EMA heads for the expert corresponding to the current
-        # internal session. This avoids using benchmark task ids.
+        # framework task slot. Class supervision remains binary.
         if hasattr(self.model_without_ddp, "update_ema_fc"):
             self.model_without_ddp.update_ema_fc()
 
@@ -123,14 +113,14 @@ class FlyPrompt(_Trainer):
         else:
             raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
 
-    def online_before_task(self, task_id):
-        pass
-
     def online_after_task(self, cur_iter):
         """Hook called after each benchmark task.
 
-        We keep ``task_id`` for task bookkeeping only; the underlying model's
-        internal session state is advanced exclusively via the task-free
-        online scheduler.
+        Framework stages define generator-level tasks. The learner still sees
+        only binary labels, but FlyPrompt advances its expert bank between
+        stages so one protocol task can own one expert slot.
         """
+        del cur_iter
+        if self.task_id + 1 < getattr(self, "n_tasks", 1):
+            self._advance_model_task_count()
         self.task_id += 1

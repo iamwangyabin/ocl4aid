@@ -102,7 +102,6 @@ class CAIDBenchmarkProtocol(Dataset):
         transform=None,
         protocol_path=None,
         index_path=None,
-        label_mode="generator",
         image_column="image",
     ):
         super().__init__()
@@ -116,9 +115,6 @@ class CAIDBenchmarkProtocol(Dataset):
 
         self.train = bool(train)
         self.transform = transform
-        self.label_mode = str(label_mode)
-        if self.label_mode not in {"generator", "binary"}:
-            raise ValueError("caidbench_label_mode must be 'generator' or 'binary'")
         self.image_column = str(image_column)
         self.protocol_path = _resolve_protocol_path(protocol_path)
         protocol = _load_protocol(self.protocol_path)
@@ -145,13 +141,8 @@ class CAIDBenchmarkProtocol(Dataset):
         self.metadata = self._select_split(index, split)
         self._init_fast_columns()
 
-        self.classes = list(range(self._num_classes()))
-        if self.label_mode == "binary":
-            self.label_space = {"real": 0, "fake": 1}
-        else:
-            self.label_space = {"real": 0}
-            for item in self.generator_order:
-                self.label_space[item["generator_name"]] = int(item["stage_id"]) + 1
+        self.classes = [0, 1]
+        self.label_space = {"real": 0, "fake": 1}
 
         self.stage_indices: dict[int, list[int]] = {}
         self.active_stage_ids: list[int] = []
@@ -215,10 +206,7 @@ class CAIDBenchmarkProtocol(Dataset):
                 continue
             frame["_online_stage_id"] = online_stage_id
             frame["_online_task_name"] = self.generator_order[online_stage_id]["generator_name"]
-            if self.label_mode == "binary":
-                frame["_target"] = frame["label"].astype("int64")
-            else:
-                frame["_target"] = frame["label"].map(lambda label: 0 if int(label) == 0 else online_stage_id + 1).astype("int64")
+            frame["_target"] = frame["label"].astype("int64")
             frames.append(frame)
         if not frames:
             raise ValueError(f"Protocol selected zero {split} samples from {self.index_path}")
@@ -230,11 +218,6 @@ class CAIDBenchmarkProtocol(Dataset):
         self._row_in_batch = self.metadata["row_in_batch"].astype("int64").tolist()
         self.targets = self.metadata["_target"].astype("int64").tolist()
         self.binary_targets = self.metadata["label"].astype("int64").tolist()
-
-    def _num_classes(self):
-        if self.label_mode == "binary":
-            return 2
-        return len(self.generator_order) + 1
 
     def _store(self) -> _ArrowImageStore:
         if self._arrow_store is None:

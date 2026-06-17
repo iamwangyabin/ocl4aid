@@ -1,5 +1,3 @@
-import gc
-
 import torch
 
 from methods._trainer import _Trainer
@@ -20,8 +18,6 @@ class SinglePromptTrainer(_Trainer):
             total_acc += acc
             total_iter += 1
 
-        del images, labels
-        gc.collect()
         return total_loss / total_iter, total_acc / total_iter
 
     def online_train(self, data):
@@ -68,9 +64,3 @@ class SinglePromptTrainer(_Trainer):
                 logit += self.mask
             loss = self.criterion(logit, y)
         return logit, loss
-
-    def online_before_task(self, task_id):
-        del task_id
-
-    def online_after_task(self, cur_iter):
-        del cur_iter

@@ -1,4 +1,3 @@
-import gc
 import logging
 
 import torch
@@ -57,8 +56,6 @@ class RanPAC(_Trainer):
             else:
                 self.model.collect_features_labels(images_copy, labels_copy)
 
-        del images_copy, labels_copy
-        gc.collect()
         return 0.0, 0.0  # No training loss/acc for subsequent tasks
 
     def online_train(self, data):
@@ -154,10 +151,8 @@ class RanPAC(_Trainer):
 
             logger.info("Random projection initialized, adapters frozen")
 
-        if not self.distributed:
-            self.model.process_task_count()
-        else:
-            self.model.module.process_task_count()
-        
+        if self.task_id + 1 < getattr(self, "n_tasks", 1):
+            self._advance_model_task_count()
+
         logger.info(f"Task {self.task_id} completed, statistics updated")
         self.task_id += 1

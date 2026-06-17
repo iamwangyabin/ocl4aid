@@ -1,4 +1,3 @@
-import gc
 from typing import List
 
 import torch
@@ -79,8 +78,6 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
         with torch.no_grad():
             self._collect_rp_features(images.clone())
 
-        del images, labels
-        gc.collect()
         return _loss / _iter, _acc / _iter
 
     def online_train(self, data):
@@ -227,16 +224,18 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
         else:
             raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
 
-    def online_before_task(self, task_id):
-        pass
-
     def online_after_task(self, cur_iter):
         # run classifier alignment for both branches at task boundary
         self._run_ca_for_branch("prompt")
         self._run_ca_for_branch("gate")
 
-        # Initialize EMA heads for the next task (if enabled)
-        if getattr(self.model_without_ddp, "use_ema_head", False) and hasattr(self.model_without_ddp, "init_fc"):
+        # Initialize EMA heads for the next task (if enabled).
+        has_next_task = self.task_id + 1 < getattr(self, "n_tasks", 1)
+        if (
+            has_next_task
+            and getattr(self.model_without_ddp, "use_ema_head", False)
+            and hasattr(self.model_without_ddp, "init_fc")
+        ):
             self.model_without_ddp.init_fc(expert_id=self.task_id + 1)
 
         self.task_id += 1

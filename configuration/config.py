@@ -36,7 +36,6 @@ def _framework_defaults(payload):
         ("data", "root"): "caidbench_data_dir",
         ("data", "protocol"): "caidbench_protocol",
         ("data", "index"): "caidbench_index_path",
-        ("data", "label_mode"): "caidbench_label_mode",
         ("data", "image_column"): "caidbench_image_column",
         ("run", "seeds"): "seeds",
         ("run", "note"): "note",
@@ -47,9 +46,7 @@ def _framework_defaults(payload):
         ("train", "amp"): "use_amp",
         ("train", "workers"): "n_worker",
         ("train", "batch_size"): "batchsize",
-        ("train", "base_batch_size"): "base_batchsize",
         ("train", "lr"): "lr",
-        ("train", "base_epochs"): "base_epochs",
         ("train", "online_iter"): "online_iter",
         ("train", "transforms"): "transforms",
         ("train", "topk"): "topk",
@@ -134,9 +131,6 @@ def base_parser():
                         help="CAIDBenchmark continual protocol YAML.")
     parser.add_argument("--caidbench_index_path", type=str, default=defaults.get("caidbench_index_path"),
                         help="Optional CAIDBenchmark index parquet override. Defaults to protocol index_path.")
-    parser.add_argument("--caidbench_label_mode", type=str, default=defaults.get("caidbench_label_mode", "generator"),
-                        choices=["generator", "binary"],
-                        help="Use real+generator classes or binary real/fake labels for training.")
     parser.add_argument("--caidbench_image_column", type=str, default=defaults.get("caidbench_image_column", "image"),
                         help="Image column name in CAIDBenchmark Arrow files.")
 
@@ -147,11 +141,7 @@ def base_parser():
     parser.add_argument("--no_amp", dest="use_amp", action="store_false", help="Disable automatic mixed precision.")
     parser.add_argument("--n_worker", type=int, default=defaults.get("n_worker", 0), help="The number of workers")
     parser.add_argument("--batchsize", type=int, default=defaults.get("batchsize", 16), help="batch size")
-    parser.add_argument("--base_batchsize", type=int, default=defaults.get("base_batchsize"),
-                        help="Optional larger batch size for the base session only. Online stages keep --batchsize.")
     parser.add_argument("--lr", type=float, default=defaults.get("lr", 0.05), help="learning rate")
-    parser.add_argument("--base_epochs", type=int, default=defaults.get("base_epochs", 1),
-                        help="Number of epochs for the base session only. Online stages are single-pass.")
     parser.add_argument("--online_iter", type=float, default=defaults.get("online_iter", 1), help="number of model updates per samples seen.")
 
     parser.add_argument("--transforms", nargs="*", default=defaults.get("transforms", ["autoaug"]), help="Additional train transforms [cutout, autoaug]")

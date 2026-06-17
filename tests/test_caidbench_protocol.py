@@ -8,7 +8,7 @@ import unittest
 from PIL import Image
 
 from datasets import CAIDBenchmarkProtocol, OnlineIterDataset
-from utils.onlinesampler import ManifestStageSampler
+from utils.onlinesampler import ManifestStageSampler, ManifestStreamSampler
 
 
 def _png_bytes(color: tuple[int, int, int]) -> bytes:
@@ -95,14 +95,13 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _dataset(self, *, train=True, label_mode="generator"):
+    def _dataset(self, *, train=True):
         return CAIDBenchmarkProtocol(
             root=self.root,
             train=train,
             transform=None,
             protocol_path=self.protocol_path,
             index_path=self.index_path,
-            label_mode=label_mode,
         )
 
     def test_protocol_order_reorders_raw_task_ids(self):
@@ -119,18 +118,14 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
         self.assertEqual(set(dataset.metadata.iloc[first_stage_indices]["task_id"].tolist()), {20})
         self.assertEqual(set(dataset.metadata.iloc[second_stage_indices]["task_id"].tolist()), {10})
 
-    def test_generator_label_mode_uses_real_plus_online_stage_classes(self):
-        dataset = self._dataset(train=True, label_mode="generator")
-
-        self.assertEqual(dataset.classes, [0, 1, 2])
-        self.assertEqual(dataset.label_space, {"real": 0, "Task B": 1, "Task A": 2})
-        first_targets = [dataset.targets[i] for i in dataset.stage_indices[0]]
-        second_targets = [dataset.targets[i] for i in dataset.stage_indices[1]]
-        self.assertEqual(first_targets, [0, 1, 0, 1])
-        self.assertEqual(second_targets, [0, 2, 0, 2])
-
-    def test_binary_label_mode_uses_original_caid_labels(self):
-        dataset = self._dataset(train=True, label_mode="binary")
+    def test_protocol_targets_are_binary(self):
+        dataset = CAIDBenchmarkProtocol(
+            root=self.root,
+            train=True,
+            transform=None,
+            protocol_path=self.protocol_path,
+            index_path=self.index_path,
+        )
 
         self.assertEqual(dataset.classes, [0, 1])
         self.assertEqual(dataset.label_space, {"real": 0, "fake": 1})
@@ -138,11 +133,11 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
         self.assertEqual([dataset.targets[i] for i in dataset.stage_indices[1]], [0, 1, 0, 1])
 
     def test_lazy_arrow_loading_and_eval_subset(self):
-        dataset = self._dataset(train=False, label_mode="generator")
+        dataset = self._dataset(train=False)
 
         image, target = dataset[0]
         self.assertEqual(image.size, (8, 8))
-        self.assertIn(target, {0, 1, 2})
+        self.assertIn(target, {0, 1})
         self.assertEqual(set(dataset.internal_slices), {"Task B", "Task A"})
 
         subset = dataset.make_eval_subset(dataset.internal_slices["Task B"])
@@ -151,15 +146,33 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
         self.assertEqual(target, 1)
         self.assertEqual(binary_target, 1)
 
-    def test_manifest_stage_sampler_uses_explicit_stage_indices(self):
-        dataset = self._dataset(train=True, label_mode="generator")
+    def test_manifest_stream_sampler_flattens_protocol_without_task_switch_api(self):
+        dataset = self._dataset(train=True)
+        wrapped = OnlineIterDataset(dataset)
+        sampler = ManifestStreamSampler(wrapped, dataset.stage_indices, seed=3)
+
+        stream_indices = list(iter(sampler))
+        first_end = sampler.stage_end_offsets[0]
+        second_end = sampler.stage_end_offsets[1]
+
+        self.assertEqual(first_end, len(dataset.stage_indices[0]))
+        self.assertEqual(second_end, len(dataset.stage_indices[0]) + len(dataset.stage_indices[1]))
+        self.assertEqual(set(stream_indices[:first_end]), set(dataset.stage_indices[0]))
+        self.assertEqual(set(stream_indices[first_end:second_end]), set(dataset.stage_indices[1]))
+
+    def test_manifest_stage_sampler_switches_framework_tasks(self):
+        dataset = self._dataset(train=True)
         wrapped = OnlineIterDataset(dataset)
         sampler = ManifestStageSampler(wrapped, dataset.stage_indices, seed=3)
 
-        sampler.set_task(0)
         self.assertEqual(set(iter(sampler)), set(dataset.stage_indices[0]))
         sampler.set_task(1)
         self.assertEqual(set(iter(sampler)), set(dataset.stage_indices[1]))
+        self.assertEqual(sampler.stage_end_offsets[0], len(dataset.stage_indices[0]))
+        self.assertEqual(
+            sampler.stage_end_offsets[1],
+            len(dataset.stage_indices[0]) + len(dataset.stage_indices[1]),
+        )
 
 
 if __name__ == "__main__":

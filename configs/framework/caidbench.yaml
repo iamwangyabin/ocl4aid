@@ -1,7 +1,6 @@
 data:
   root: /home/home/yabin/CAIDBench
   protocol: protocol_presets/caidbench/model_appearance_order_protocol.yaml
-  label_mode: generator
   image_column: image
 
 run:
@@ -18,9 +17,7 @@ train:
   amp: true
   workers: 24
   batch_size: 16
-  base_batch_size: 128
   lr: 0.05
-  base_epochs: 1
   online_iter: 1
   transforms: [autoaug]
   batch_mask: true

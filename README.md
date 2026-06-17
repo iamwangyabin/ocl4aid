@@ -21,36 +21,38 @@ image Arrow files are not bundled; pass their root with `--caidbench_data_dir`.
 The index selects rows by `arrow_path`, `batch_id`, and `row_in_batch` relative
 to that root.
 
-## Label Modes
+## Training Labels
 
-`--caidbench_label_mode generator` is the default:
-
-- `real = 0`
-- fake samples from online stage `k` use class `k + 1`
-- evaluation folds predictions back to binary real/fake accuracy
-
-`--caidbench_label_mode binary` trains directly on CAID labels:
+Training is always binary:
 
 - `real = 0`
 - `fake = 1`
 
+The protocol still keeps generator/stage metadata internally so it can build the
+stream order and report per-generator evaluation metrics. That metadata is not
+used as class supervision and is not passed into `online_step`.
+
 ## Online Setting
 
-The protocol YAML defines the continual process: active stage order, the base
-stage, and every later online stage. Stage 0 is treated as the base session.
-`--base_epochs` only controls how many passes are used for that first active
-protocol stage; every later online stage is observed once. `--online_iter`
-controls how many optimizer updates are run when a mini-batch arrives.
+The protocol treats each generator stage as a framework-level continual task,
+following the FlyGCL-style separation between stream structure and learner
+supervision. The trainer iterates through generator stages and may call method
+task-boundary hooks, but `online_step` receives only mini-batches of images and
+binary labels. Dataset indices, generator names, and protocol stage IDs are not
+passed into `online_step`.
 
-FlyPrompt, DualPrompt, and MVP keep their task-free internal prompt-session
-schedule, but it is active only during the online phase. By default the number
-of internal sessions is inferred from the protocol stage count, with the base
-session occupying slot 0.
+`task_num` is set to the number of protocol generator stages so prompt/expert
+methods can allocate one slot per framework task. The class supervision exposed
+to the learner remains binary.
 
-Periodic online evaluation follows a FlyPrompt-style stream checkpoint: by
-default the trainer evaluates every 20000 online training samples using the full
-test slices for the generators seen so far. These stream evaluations are logged
-separately from the stage-boundary metrics in `seed_<seed>_ocl_metrics.json`.
+`--online_iter` controls how many optimizer updates are run when a mini-batch
+arrives.
+
+Periodic online evaluation uses framework-only stream offsets: by default the
+trainer evaluates every 20000 training samples using the full test slices for
+the generators that have appeared in the stream so far. These evaluations log
+binary deepfake detection metrics and are kept in
+`seed_<seed>_ocl_metrics.json`.
 
 ## Configuration
 
@@ -93,10 +95,21 @@ Metrics are written under:
 run_logs/<note>/
 ```
 
-The main output is `seed_<seed>_ocl_metrics.json`, containing per-stage
-accuracy, average accuracy, forgetting, and plasticity. After the first active
-stage completes, `seed_<seed>_after_base_task.pt` is saved in the same run
-directory for reuse.
+Each seed writes:
+
+- `seed_<seed>_train.log`: full stdout-style training and protocol-evaluation log
+- `seed_<seed>_ocl_metrics.json`: structured stage, stream, and summary metrics
+
+The main output is `seed_<seed>_ocl_metrics.json`, containing per-generator and
+per-stage binary deepfake detection metrics:
+
+- `accuracy`
+- `f1`
+- `ap`
+- `auc`
+
+The summary also reports average performance, forgetting, and plasticity for
+each metric.
 
 ## Tests
 
