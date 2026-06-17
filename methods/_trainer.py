@@ -44,6 +44,8 @@ _LEARNER_KWARG_DENYLIST = {
     "caidbench_index_path",
     "caidbench_image_column",
     "eval_interval",
+    "stage_blurry_n",
+    "stage_blurry_m",
     "batchsize",
     "n_worker",
     "log_path",
@@ -353,6 +355,8 @@ class _Trainer():
             _w,
             _r,
             seed=self.rnd_seed,
+            stage_blurry_n=getattr(self, "stage_blurry_n", 100),
+            stage_blurry_m=getattr(self, "stage_blurry_m", 0),
         )
         self.train_dataloader = DataLoader(
             self.online_iter_dataset,
@@ -381,10 +385,12 @@ class _Trainer():
             for stage_id in self.protocol_stage_ids
         )
         logger.info(
-            "Protocol stream | framework generator tasks: %s | learner labels: binary | task slots: %s | training samples: %s",
+            "Protocol stream | framework generator tasks: %s | learner labels: binary | task slots: %s | training samples: %s | temporal blurry n=%s m=%s",
             self.protocol_stage_count,
             self.n_tasks,
             stream_samples,
+            getattr(self, "stage_blurry_n", 100),
+            getattr(self, "stage_blurry_m", 0),
         )
 
     def setup_distributed_model(self):

@@ -11,6 +11,16 @@ from datasets import CAIDBenchmarkProtocol, OnlineIterDataset
 from utils.onlinesampler import ManifestStageSampler, ManifestStreamSampler
 
 
+class _TinyStageDataset:
+    classes = [0, 1]
+
+    def __init__(self, size: int):
+        self.targets = [idx % 2 for idx in range(size)]
+
+    def __len__(self):
+        return len(self.targets)
+
+
 def _png_bytes(color: tuple[int, int, int]) -> bytes:
     buffer = BytesIO()
     Image.new("RGB", (8, 8), color).save(buffer, format="PNG")
@@ -173,6 +183,54 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
             sampler.stage_end_offsets[1],
             len(dataset.stage_indices[0]) + len(dataset.stage_indices[1]),
         )
+
+    def test_temporal_blurry_sampler_defaults_to_hard_boundaries(self):
+        stage_indices = {
+            0: list(range(0, 6)),
+            1: list(range(6, 12)),
+            2: list(range(12, 18)),
+        }
+        sampler = ManifestStageSampler(
+            _TinyStageDataset(18),
+            stage_indices,
+            seed=11,
+            stage_blurry_n=100,
+            stage_blurry_m=100,
+        )
+
+        for stage_id, expected_indices in stage_indices.items():
+            self.assertEqual(set(sampler.indices[stage_id]), set(expected_indices))
+
+    def test_temporal_blurry_sampler_only_mixes_adjacent_stages(self):
+        stage_indices = {
+            0: list(range(0, 6)),
+            1: list(range(6, 12)),
+            2: list(range(12, 18)),
+        }
+        sampler = ManifestStageSampler(
+            _TinyStageDataset(18),
+            stage_indices,
+            seed=11,
+            stage_blurry_n=0,
+            stage_blurry_m=50,
+        )
+
+        def origin(index):
+            return index // 6
+
+        all_indices = []
+        for indices in sampler.indices.values():
+            all_indices.extend(indices)
+        self.assertEqual(set(all_indices), set(range(18)))
+        self.assertEqual(len(all_indices), len(set(all_indices)))
+
+        self.assertTrue({origin(i) for i in sampler.indices[0]}.issubset({0, 1}))
+        self.assertTrue({origin(i) for i in sampler.indices[1]}.issubset({0, 1, 2}))
+        self.assertTrue({origin(i) for i in sampler.indices[2]}.issubset({1, 2}))
+        self.assertIn(1, {origin(i) for i in sampler.indices[0]})
+        self.assertIn(0, {origin(i) for i in sampler.indices[1]})
+        self.assertIn(2, {origin(i) for i in sampler.indices[1]})
+        self.assertIn(1, {origin(i) for i in sampler.indices[2]})
 
 
 if __name__ == "__main__":

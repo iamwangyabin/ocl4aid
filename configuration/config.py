@@ -48,6 +48,8 @@ def _framework_defaults(payload):
         ("train", "batch_size"): "batchsize",
         ("train", "lr"): "lr",
         ("train", "online_iter"): "online_iter",
+        ("train", "stage_blurry_n"): "stage_blurry_n",
+        ("train", "stage_blurry_m"): "stage_blurry_m",
         ("train", "transforms"): "transforms",
         ("train", "topk"): "topk",
         ("eval", "interval"): "eval_interval",
@@ -143,6 +145,12 @@ def base_parser():
     parser.add_argument("--batchsize", type=int, default=defaults.get("batchsize", 16), help="batch size")
     parser.add_argument("--lr", type=float, default=defaults.get("lr", 0.05), help="learning rate")
     parser.add_argument("--online_iter", type=float, default=defaults.get("online_iter", 1), help="number of model updates per samples seen.")
+    parser.add_argument("--stage_blurry_n", "--blurry_n", "--n", dest="stage_blurry_n",
+                        type=int, default=defaults.get("stage_blurry_n", 100),
+                        help="Percent of each protocol stage kept as hard-boundary home samples. 100 recovers the strict stream.")
+    parser.add_argument("--stage_blurry_m", "--blurry_m", "--m", dest="stage_blurry_m",
+                        type=int, default=defaults.get("stage_blurry_m", 0),
+                        help="Percent of non-home eligible samples leaked to adjacent time stages. 0 recovers the strict stream.")
 
     parser.add_argument("--transforms", nargs="*", default=defaults.get("transforms", ["autoaug"]), help="Additional train transforms [cutout, autoaug]")
     parser.add_argument("--no_batchmask", action="store_true", default=defaults.get("no_batchmask", False), help="Disable batch mask, use seen mask")
