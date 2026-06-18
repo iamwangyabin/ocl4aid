@@ -10,6 +10,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from .image_quality import as_rgb_preserve_jpeg_metadata
+from .safe_sample import make_bad_sample
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +36,10 @@ class _ProtocolEvalSubset(Dataset):
 
     def __getitem__(self, index):
         base_index = self.indices[index]
-        image, target = self.base_dataset[base_index]
+        try:
+            image, target = self.base_dataset[base_index]
+        except Exception as exc:
+            return make_bad_sample(base_index, exc)
         return image, target, self.base_dataset.binary_targets[base_index]
 
 

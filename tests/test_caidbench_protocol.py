@@ -7,7 +7,14 @@ import unittest
 
 from PIL import Image
 
-from datasets import CAIDBenchmarkProtocol, ConditionalJPEGCompress, OnlineIterDataset, estimate_jpeg_quality
+from datasets import (
+    BadSample,
+    CAIDBenchmarkProtocol,
+    ConditionalJPEGCompress,
+    OnlineIterDataset,
+    estimate_jpeg_quality,
+    safe_collate_drop_bad,
+)
 from datasets.CAIDBenchmarkProtocol import _image_from_payload
 from utils.onlinesampler import ManifestStageSampler, ManifestStreamSampler
 
@@ -17,6 +24,17 @@ class _TinyStageDataset:
 
     def __init__(self, size: int):
         self.targets = [idx % 2 for idx in range(size)]
+
+    def __len__(self):
+        return len(self.targets)
+
+
+class _UnreadableDataset:
+    classes = [0, 1]
+    targets = [0, 1]
+
+    def __getitem__(self, index):
+        raise OSError("truncated image")
 
     def __len__(self):
         return len(self.targets)
@@ -188,6 +206,27 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
         self.assertLessEqual(abs(low_estimate - 70), 1)
         self.assertLessEqual(abs(high_estimate - 80), 1)
         self.assertLessEqual(abs(png_estimate - 80), 1)
+
+    def test_unreadable_online_samples_can_be_dropped_by_collate(self):
+        wrapped = OnlineIterDataset(_UnreadableDataset())
+        bad_item = wrapped[0]
+
+        self.assertIsInstance(bad_item, BadSample)
+        self.assertIsNone(safe_collate_drop_bad([bad_item]))
+
+    def test_bad_eval_subset_sample_can_be_dropped_by_collate(self):
+        dataset = CAIDBenchmarkProtocol(
+            root=self.root,
+            train=False,
+            transform=lambda _image: (_ for _ in ()).throw(OSError("truncated image")),
+            protocol_path=self.protocol_path,
+            index_path=self.index_path,
+        )
+        subset = dataset.make_eval_subset([0])
+        bad_item = subset[0]
+
+        self.assertIsInstance(bad_item, BadSample)
+        self.assertIsNone(safe_collate_drop_bad([bad_item]))
 
     def test_manifest_stream_sampler_flattens_protocol_without_task_switch_api(self):
         dataset = self._dataset(train=True)

@@ -17,7 +17,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-from datasets import CAIDBenchmarkProtocol, ConditionalJPEGCompress, OnlineIterDataset
+from datasets import CAIDBenchmarkProtocol, ConditionalJPEGCompress, OnlineIterDataset, safe_collate_drop_bad
 from protocol_metrics import (
     DETECTION_METRICS,
     StageMetrics,
@@ -392,6 +392,7 @@ class _Trainer():
             pin_memory=False,
             num_workers=self.n_worker,
             persistent_workers=self.n_worker > 0,
+            collate_fn=safe_collate_drop_bad,
         )
         self.test_sampler = None
         self._log_protocol_stream_metadata()
@@ -435,6 +436,26 @@ class _Trainer():
             getattr(self, "stage_blurry_n", 100),
             getattr(self, "stage_blurry_m", 0),
         )
+
+    def _skip_empty_batch(self, batch, context):
+        local_empty = batch is None
+        if self.distributed:
+            empty_flag = torch.tensor(
+                1 if local_empty else 0,
+                dtype=torch.int32,
+                device=self.device,
+            )
+            dist.all_reduce(empty_flag, op=dist.ReduceOp.MAX)
+            if int(empty_flag.item()) > 0:
+                logger.warning(
+                    "Skipping %s batch because at least one distributed rank dropped all unreadable samples.",
+                    context,
+                )
+                return True
+        elif local_empty:
+            logger.warning("Skipping empty %s batch after dropping unreadable samples.", context)
+            return True
+        return False
 
     def setup_distributed_model(self):
 
@@ -638,7 +659,10 @@ class _Trainer():
         for epoch in range(self.base_stage_epochs):
             logger.info("Base epoch %s/%s", epoch + 1, self.base_stage_epochs)
             self.train_sampler.set_epoch(epoch)
-            for images, labels, _idx in self.train_dataloader:
+            for batch in self.train_dataloader:
+                if self._skip_empty_batch(batch, "base"):
+                    continue
+                images, labels, _idx = batch
                 samples_cnt += images.size(0) * self.world_size
                 loss, acc = self.online_step(images, labels, None)
                 num_report = self._maybe_report_training(
@@ -693,7 +717,10 @@ class _Trainer():
             self.train_sampler.set_task(stage_id)
             self.online_before_task(stage_id)
 
-            for images, labels, _idx in self.train_dataloader:
+            for batch in self.train_dataloader:
+                if self._skip_empty_batch(batch, f"online_stage_{stage_id}"):
+                    continue
+                images, labels, _idx = batch
                 batch_size_global = images.size(0) * self.world_size
                 online_samples_cnt += batch_size_global
                 samples_cnt += batch_size_global
@@ -811,12 +838,17 @@ class _Trainer():
             batch_size=self.batchsize * 2,
             shuffle=False,
             num_workers=self.n_worker,
+            collate_fn=safe_collate_drop_bad,
         )
         binary_predictions = []
         binary_target_values = []
         fake_scores = []
         with torch.no_grad():
-            for images, _targets, binary_targets in loader:
+            for batch in loader:
+                if batch is None:
+                    logger.warning("Skipping empty protocol eval batch after dropping unreadable samples.")
+                    continue
+                images, _targets, binary_targets = batch
                 images = images.to(self.device)
                 logits = self._protocol_eval_logits(images)
                 pred_indices = torch.argmax(logits, dim=-1).detach().cpu().tolist()
@@ -992,7 +1024,10 @@ class _Trainer():
             self.setup_distributed_model()
 
             samples_cnt = 0
-            for i, (images, labels, idx) in enumerate(self.train_dataloader):
+            for i, batch in enumerate(self.train_dataloader):
+                if self._skip_empty_batch(batch, "smoke"):
+                    continue
+                images, labels, idx = batch
                 samples_cnt += images.size(0) * self.world_size
                 loss, acc = self.online_step(images, labels, None)
                 self.report_training(samples_cnt, loss, acc)
