@@ -229,6 +229,15 @@ def base_parser():
     parser.add_argument("--use_ema_head", action="store_true", default=defaults.get("use_ema_head", False),
                         help="Use EMA-based classifier head bank and ensemble in compatible methods (e.g., SPrompt, HiDe/NoRGa, DualPrompt, MVP).")
 
+    # ========== RINE-side Gaussian configurations ==========
+    parser.add_argument("--rine_gauss_var_floor", type=float, default=defaults.get("rine_gauss_var_floor", 1e-4),
+                        help="Minimum diagonal variance for RINE-side Gaussian likelihood.")
+    parser.add_argument("--rine_gauss_min_count", type=int, default=defaults.get("rine_gauss_min_count", 2),
+                        help="Minimum per-class samples required before a stage Gaussian is used.")
+    parser.add_argument("--rine_gauss_aggregation", type=str, default=defaults.get("rine_gauss_aggregation", "logmeanexp"),
+                        choices=["logmeanexp", "logsumexp", "mean", "max"],
+                        help="How to aggregate per-stage Gaussian log-likelihoods.")
+
     args = parser.parse_args()
     if args.method is None:
         args.method = method

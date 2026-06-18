@@ -1208,7 +1208,7 @@ class _Trainer():
             logits = result[0] if isinstance(result, tuple) else result
             return logits + self.mask
 
-        if self.method in {"l2p", "dualprompt", "mvp", "ranpac", "singleprompt", "slca", "sdlora"}:
+        if self.method in {"l2p", "dualprompt", "mvp", "ranpac", "singleprompt", "slca", "sdlora", "rineside_gauss"}:
             return self.model(images) + self.mask
 
         raise NotImplementedError(

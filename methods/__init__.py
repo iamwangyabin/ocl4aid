@@ -9,6 +9,7 @@ from .hide_norga_trainer import HiDeGCLTrainer, NoRGaGCLTrainer
 from .sdlora import SDLoRAGCL
 from .singleprompt import SinglePromptTrainer
 from .sprompt import SPrompt as SPromptTrainer
+from .rineside_gauss import RineSideGauss
 
 METHODS = {
     "codaprompt": CodaPrompt,
@@ -25,4 +26,5 @@ METHODS = {
     "sdlora": SDLoRAGCL,
     "singleprompt": SinglePromptTrainer,
     "sprompt": SPromptTrainer,
+    "rineside_gauss": RineSideGauss,
 }

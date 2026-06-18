@@ -10,6 +10,7 @@ from .hide_adapter_vit import HiDeAdapterModel
 from .sdlora import SDLoRAModel
 from .singleprompt import SinglePrompt
 from .sprompt import SPrompt
+from .rineside_gauss import RineSideGauss
 
 MODELS = {
     "codaprompt": CodaPrompt,
@@ -25,4 +26,5 @@ MODELS = {
     "sdlora": SDLoRAModel,
     "singleprompt": SinglePrompt,
     "sprompt": SPrompt,
+    "rineside_gauss": RineSideGauss,
 }
