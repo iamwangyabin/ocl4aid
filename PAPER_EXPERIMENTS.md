@@ -201,14 +201,13 @@ generators suffer the most forgetting.
 
 ## Active Execution Plan
 
-Last updated: 2026-06-17 22:20 CST.
+Last updated: 2026-06-18 14:00 CST.
 
-The current remote run is the first core-method execution pass for the updated
-paper plan. It explicitly overrides the framework YAML defaults so that the
-paper common setup is used:
+The current remote run restarts the core-method execution pass after enabling
+reusable base-stage checkpoints. It explicitly overrides the framework YAML
+defaults so that the paper common setup is used:
 
 ```text
-commit = 5d144ac
 base_stage_epochs = 5
 backbone = vit_base_patch16_224
 online_iter = 1
@@ -216,20 +215,20 @@ batchsize = 16
 eval_interval = 20000
 seeds = 1, 2, 3
 methods = flyprompt, l2p, dualprompt, codaprompt, mvp, ranpac
+base_checkpoint_args = --save_base_checkpoint --base_checkpoint_dir <machine>/run_logs/base_checkpoints
 ```
 
-The earlier remote hard-boundary queues that used the YAML default
-`base_stage_epochs=1` were stopped before launching this plan. The old
-standalone A6000 flyprompt run and the old 4090-2 `caid-train sprompts` run
-were also stopped to free the GPUs. The CAIDBench rsync transfer from A6000 to
-4090-1 is still running and is not part of this experiment plan.
+The older CAID experiment logs were moved into per-machine
+`run_logs/_archive_before_base_reuse_<timestamp>/` directories before launching
+this run. The A6000-to-4090-1 CAIDBench rsync transfer was not stopped and is
+not part of this experiment plan.
 
 Current machine assignment:
 
-| Machine | Stream setting | Queue/session | Methods | Data root |
-| --- | --- | --- | --- | --- |
-| `4090-2` | Main blurry, `n=50,m=20`, leakage 10% | `caid_mainblurry_base5_core_s1to3_20260617` | `flyprompt -> l2p -> dualprompt -> codaprompt -> mvp -> ranpac` | `/home/yabin/CAIDBench` |
-| `A6000` | Hard control, `n=100,m=0`, leakage 0% | `caid_hard_base5_core_s1to3_20260617` | `flyprompt -> l2p -> dualprompt -> codaprompt -> mvp -> ranpac` | `/home/home/yabin/CAIDBench` |
+| Machine | Stream setting | Plan id | Remote commit | Data root | Launcher PID |
+| --- | --- | --- | --- | --- | ---: |
+| `4090-2` | Main blurry, `n=50,m=20`, leakage 10% | `caid_mainblurry_baseckpt_core_s1to3_20260618` | `78fcf03` | `/home/yabin/CAIDBench` | `1486876` |
+| `A6000` | Hard control, `n=100,m=0`, leakage 0% | `caid_hard_baseckpt_core_s1to3_20260618` | `a7457c6` | `/home/home/yabin/CAIDBench` | `1739115` |
 
 Launcher script:
 
@@ -237,26 +236,41 @@ Launcher script:
 scripts/launch_caid_experiment_queue.sh
 ```
 
-Main blurry logs on `4090-2`:
+Main blurry logs and base checkpoints on `4090-2`:
 
 ```text
-/home/yabin/ocl4aid/run_logs/caid_mainblurry_base5_core_s1to3_20260617/
-/home/yabin/ocl4aid/run_logs/caid_mainblurry_<method>_base5_s1-2-3_5d144ac/
+/home/yabin/ocl4aid/run_logs/caid_mainblurry_baseckpt_core_s1to3_20260618/
+/home/yabin/ocl4aid/run_logs/caid_mainblurry_<method>_base5_s1-2-3_78fcf03/
+/home/yabin/ocl4aid/run_logs/base_checkpoints/
 ```
 
-Hard control logs on `A6000`:
+Hard control logs and base checkpoints on `A6000`:
 
 ```text
-/home/home/yabin/ocl4aid/run_logs/caid_hard_base5_core_s1to3_20260617/
-/home/home/yabin/ocl4aid/run_logs/caid_hard_<method>_base5_s1-2-3_5d144ac/
+/home/home/yabin/ocl4aid/run_logs/caid_hard_baseckpt_core_s1to3_20260618/
+/home/home/yabin/ocl4aid/run_logs/caid_hard_<method>_base5_s1-2-3_a7457c6/
+/home/home/yabin/ocl4aid/run_logs/base_checkpoints/
+```
+
+Reusable base checkpoint filename pattern:
+
+```text
+base_<method>_vit_base_patch16_224_model_appearance_order_protocol_seed<seed>_stage0_epochs5.pt
+```
+
+Future same-machine stream runs can reuse the saved base with:
+
+```bash
+--load_base_checkpoint auto --base_checkpoint_dir <machine>/run_logs/base_checkpoints
 ```
 
 Monitoring commands:
 
 ```bash
-ssh 4090-2 "tail -n 80 /home/yabin/ocl4aid/run_logs/caid_mainblurry_base5_core_s1to3_20260617/launcher.log"
-ssh A6000 "tail -n 80 /home/home/yabin/ocl4aid/run_logs/caid_hard_base5_core_s1to3_20260617/launcher.log"
-ssh A6000 "tmux attach -t caid_hard_base5_core_s1to3_20260617"
+ssh 4090-2 "tail -n 80 /home/yabin/ocl4aid/run_logs/caid_mainblurry_baseckpt_core_s1to3_20260618/launcher.log"
+ssh A6000 "tail -n 80 /home/home/yabin/ocl4aid/run_logs/caid_hard_baseckpt_core_s1to3_20260618/launcher.log"
+ssh 4090-2 "find /home/yabin/ocl4aid/run_logs/base_checkpoints -maxdepth 1 -type f -name '*.pt' | sort"
+ssh A6000 "find /home/home/yabin/ocl4aid/run_logs/base_checkpoints -maxdepth 1 -type f -name '*.pt' | sort"
 ```
 
 After these queues finish, run the remaining planned stream-strength settings
