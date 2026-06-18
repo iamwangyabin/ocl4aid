@@ -71,6 +71,46 @@ the generators that have appeared in the stream so far. These evaluations log
 binary deepfake detection metrics and are kept in
 `seed_<seed>_ocl_metrics.json`.
 
+## Base Checkpoints
+
+The supervised base stage can be saved once and reused by later runs with the
+same method, backbone, protocol order, seed, and `--base_stage_epochs` value.
+This avoids rerunning stage 0 when comparing stream settings.
+
+Precompute and save the base stage:
+
+```bash
+python3 main.py \
+  --config configs/framework/caidbench.yaml \
+  --method flyprompt \
+  --base_stage_epochs 5 \
+  --save_base_checkpoint \
+  --base_checkpoint_only \
+  --no_swanlab
+```
+
+The automatic save path is:
+
+```text
+<log_path>/base_checkpoints/base_<method>_<backbone>_<protocol>_seed<seed>_stage0_epochs<epochs>.pt
+```
+
+When different queues use different `--log_path` roots, pass the same
+`--base_checkpoint_dir` to both the precompute command and the online runs.
+
+Reuse it in an online run:
+
+```bash
+python3 main.py \
+  --config configs/framework/caidbench.yaml \
+  --method flyprompt \
+  --base_stage_epochs 5 \
+  --load_base_checkpoint auto \
+  --stage_blurry_n 50 \
+  --stage_blurry_m 20 \
+  --no_swanlab
+```
+
 ## Configuration
 
 Common framework settings live in `configs/framework/caidbench.yaml`. Method

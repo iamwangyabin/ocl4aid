@@ -21,6 +21,13 @@ With `base_stage_epochs=5`, every method first trains a supervised base detector
 on ProGAN for 5 epochs, then online continual learning starts from stage 1.
 Do not compare methods with different base-stage budgets.
 
+The base stage checkpoint can be saved once per method/seed and reused across
+stream settings. Use `--save_base_checkpoint --base_checkpoint_only` to
+precompute the base, then use `--load_base_checkpoint auto` for hard, mild,
+main, and strong blurry runs with the same method, backbone, protocol order,
+seed, and `base_stage_epochs`. If different stream queues use different
+`log_path` roots, set a shared `--base_checkpoint_dir` for all of them.
+
 The learner supervision remains binary throughout all experiments:
 
 ```text
@@ -295,6 +302,18 @@ Recommended execution order:
 
 ## Example Commands
 
+Precompute reusable base:
+
+```bash
+python3 main.py \
+  --config configs/framework/caidbench.yaml \
+  --method flyprompt \
+  --base_stage_epochs 5 \
+  --save_base_checkpoint \
+  --base_checkpoint_only \
+  --no_swanlab
+```
+
 Main blurry:
 
 ```bash
@@ -302,6 +321,7 @@ python3 main.py \
   --config configs/framework/caidbench.yaml \
   --method flyprompt \
   --base_stage_epochs 5 \
+  --load_base_checkpoint auto \
   --stage_blurry_n 50 \
   --stage_blurry_m 20 \
   --note flyprompt_base5_blurry10 \
@@ -315,6 +335,7 @@ python3 main.py \
   --config configs/framework/caidbench.yaml \
   --method flyprompt \
   --base_stage_epochs 5 \
+  --load_base_checkpoint auto \
   --stage_blurry_n 100 \
   --stage_blurry_m 0 \
   --note flyprompt_base5_hard \
@@ -329,6 +350,7 @@ python3 main.py \
   --method flyprompt \
   --seeds 1 2 3 4 5 \
   --base_stage_epochs 5 \
+  --load_base_checkpoint auto \
   --stage_blurry_n 50 \
   --stage_blurry_m 20 \
   --note flyprompt_base5_blurry10_s5 \

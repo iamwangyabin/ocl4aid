@@ -45,6 +45,10 @@ _LEARNER_KWARG_DENYLIST = {
     "caidbench_image_column",
     "eval_interval",
     "base_stage_epochs",
+    "save_base_checkpoint",
+    "base_checkpoint_dir",
+    "load_base_checkpoint",
+    "base_checkpoint_only",
     "stage_blurry_n",
     "stage_blurry_m",
     "batchsize",
@@ -79,11 +83,20 @@ class _Trainer():
             raise ValueError(
                 f"--base_stage_epochs must be non-negative, got {self.base_stage_epochs}"
             )
+        self.save_base_checkpoint = bool(getattr(self, "save_base_checkpoint", False))
+        self.load_base_checkpoint = getattr(self, "load_base_checkpoint", None)
+        if self.load_base_checkpoint == "":
+            self.load_base_checkpoint = None
+        self.base_checkpoint_dir = getattr(self, "base_checkpoint_dir", None)
+        self.base_checkpoint_only = bool(getattr(self, "base_checkpoint_only", False))
 
         # These will be fully initialized once dataset size is known.
         self.phase = "init"
         self.online_samples_seen = 0
         self._next_stream_eval_at = self.eval_interval if self.eval_interval > 0 else None
+        self._base_checkpoint_loaded = False
+        self._loaded_base_samples_seen = 0
+        self._loaded_base_stage_metrics_payload = []
         self._swanlab = None
         self._swanlab_run = None
         self._swanlab_enabled = False
@@ -526,6 +539,256 @@ class _Trainer():
             "external_accuracy_by_subset": stage_metric.external_accuracy_by_subset,
         }
 
+    def _stage_metric_from_payload(self, payload):
+        return StageMetrics(
+            stage_id=int(payload["stage_id"]),
+            internal_metrics_by_generator=dict(
+                payload.get("internal_metrics_by_generator", {})
+            ),
+            external_metrics_by_subset=dict(
+                payload.get("external_metrics_by_subset", {})
+            ),
+            new_generators=list(payload.get("new_generators", [])),
+        )
+
+    def _base_checkpoint_directory(self):
+        configured = getattr(self, "base_checkpoint_dir", None)
+        if configured:
+            return os.path.abspath(os.path.expanduser(configured))
+        return os.path.abspath(
+            os.path.join(getattr(self, "log_path", "run_logs"), "base_checkpoints")
+        )
+
+    def _default_base_checkpoint_path(self):
+        base_stage_id = self._base_stage_id()
+        if base_stage_id is None:
+            raise ValueError(
+                "Base checkpointing requires --base_stage_epochs > 0 and a non-empty protocol."
+            )
+        protocol_name = os.path.splitext(os.path.basename(self.caidbench_protocol))[0]
+        filename = (
+            f"base_{self._metric_slug(self.method)}"
+            f"_{self._metric_slug(self.backbone)}"
+            f"_{self._metric_slug(protocol_name)}"
+            f"_seed{self.rnd_seed}"
+            f"_stage{base_stage_id}"
+            f"_epochs{self.base_stage_epochs}.pt"
+        )
+        return os.path.join(self._base_checkpoint_directory(), filename)
+
+    def _resolve_load_base_checkpoint_path(self):
+        configured = getattr(self, "load_base_checkpoint", None)
+        if not configured:
+            return None
+        configured = str(configured)
+        if configured.lower() == "auto":
+            return self._default_base_checkpoint_path()
+        return os.path.abspath(os.path.expanduser(configured))
+
+    def _collect_rng_state(self):
+        state = {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch": torch.get_rng_state(),
+        }
+        if torch.cuda.is_available():
+            state["cuda_all"] = torch.cuda.get_rng_state_all()
+        return state
+
+    def _restore_rng_state(self, rng_state):
+        if not isinstance(rng_state, dict):
+            return
+        try:
+            if "python" in rng_state:
+                random.setstate(rng_state["python"])
+            if "numpy" in rng_state:
+                np.random.set_state(rng_state["numpy"])
+            if "torch" in rng_state:
+                torch.set_rng_state(rng_state["torch"].cpu())
+        except Exception as e:
+            logger.warning("Failed to restore CPU RNG state from base checkpoint: %s", e)
+
+        cuda_states = rng_state.get("cuda_all")
+        if not torch.cuda.is_available() or not cuda_states:
+            return
+        try:
+            if len(cuda_states) == torch.cuda.device_count():
+                torch.cuda.set_rng_state_all([state.cpu() for state in cuda_states])
+            else:
+                local_index = int(getattr(self, "gpu", 0) or 0)
+                cuda_state = cuda_states[min(local_index, len(cuda_states) - 1)].cpu()
+                torch.cuda.set_rng_state(cuda_state, device=self.device)
+        except Exception as e:
+            logger.warning("Failed to restore CUDA RNG state from base checkpoint: %s", e)
+
+    def _torch_load_checkpoint(self, path):
+        try:
+            return torch.load(path, map_location=self.device, weights_only=False)
+        except TypeError:
+            return torch.load(path, map_location=self.device)
+
+    def _protocol_generator_names(self):
+        return [
+            entry["generator_name"]
+            for entry in getattr(self, "protocol_generator_order", [])
+        ]
+
+    def _validate_base_checkpoint(self, checkpoint, path):
+        metadata = checkpoint.get("metadata", {})
+        if metadata.get("format_version") != 1:
+            raise ValueError(
+                f"Unsupported base checkpoint format in {path}: "
+                f"{metadata.get('format_version')!r}"
+            )
+
+        checks = [
+            ("method", metadata.get("method"), self.method),
+            ("backbone", metadata.get("backbone"), self.backbone),
+            ("n_classes", metadata.get("n_classes"), self.n_classes),
+            ("n_tasks", metadata.get("n_tasks"), self.n_tasks),
+            ("base_stage_id", metadata.get("base_stage_id"), self._base_stage_id()),
+            (
+                "base_stage_epochs",
+                metadata.get("base_stage_epochs"),
+                self.base_stage_epochs,
+            ),
+        ]
+        if self.rnd_seed is not None:
+            checks.append(("rnd_seed", metadata.get("rnd_seed"), self.rnd_seed))
+
+        mismatches = []
+        for name, saved, expected in checks:
+            if saved is None:
+                mismatches.append(f"{name}: missing != {expected!r}")
+            elif saved != expected:
+                mismatches.append(f"{name}: {saved!r} != {expected!r}")
+
+        saved_generators = metadata.get("protocol_generators")
+        current_generators = self._protocol_generator_names()
+        if saved_generators != current_generators:
+            mismatches.append("protocol generator order differs")
+
+        if mismatches:
+            details = "; ".join(mismatches)
+            raise ValueError(f"Base checkpoint {path} does not match this run: {details}")
+
+    def _move_optimizer_state_to_device(self):
+        for state in self.optimizer.state.values():
+            for key, value in list(state.items()):
+                if torch.is_tensor(value):
+                    state[key] = value.to(self.device)
+
+    def _save_base_checkpoint(self, stage_metrics, samples_cnt):
+        if not self.save_base_checkpoint:
+            return None
+
+        output_path = self._default_base_checkpoint_path()
+        if self.is_main_process():
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            checkpoint = {
+                "metadata": {
+                    "format_version": 1,
+                    "created_at": datetime.datetime.now().isoformat(),
+                    "method": self.method,
+                    "backbone": self.backbone,
+                    "rnd_seed": self.rnd_seed,
+                    "caidbench_protocol": self.caidbench_protocol,
+                    "protocol_generators": self._protocol_generator_names(),
+                    "base_stage_id": self._base_stage_id(),
+                    "base_stage_epochs": self.base_stage_epochs,
+                    "n_classes": self.n_classes,
+                    "n_tasks": self.n_tasks,
+                    "global_batchsize": self.global_batchsize,
+                    "input_size": self.inp_size,
+                },
+                "model_state": self.model_without_ddp.state_dict(),
+                "optimizer_state": self.optimizer.state_dict(),
+                "scheduler_state": self.scheduler.state_dict(),
+                "scaler_state": self.scaler.state_dict(),
+                "model_attrs": {
+                    "task_count": getattr(self.model_without_ddp, "task_count", None),
+                },
+                "trainer_state": {
+                    "task_id": getattr(self, "task_id", None),
+                    "exposed_classes": list(self.exposed_classes),
+                    "mask": self.mask.detach().cpu(),
+                    "phase": self.phase,
+                    "samples_cnt": int(samples_cnt),
+                    "online_samples_seen": int(self.online_samples_seen),
+                    "next_stream_eval_at": self._next_stream_eval_at,
+                },
+                "stage_metrics": [
+                    self._protocol_metric_payload(item)
+                    for item in stage_metrics
+                ],
+                "rng_state": self._collect_rng_state(),
+            }
+            torch.save(checkpoint, output_path)
+            logger.info("Saved reusable base-stage checkpoint to %s", output_path)
+
+        if self.distributed:
+            dist.barrier()
+        return output_path
+
+    def _load_base_checkpoint_if_requested(self):
+        path = self._resolve_load_base_checkpoint_path()
+        if path is None:
+            return
+        if self._base_stage_id() is None:
+            raise ValueError("--load_base_checkpoint requires --base_stage_epochs > 0.")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Base checkpoint not found: {path}")
+
+        checkpoint = self._torch_load_checkpoint(path)
+        self._validate_base_checkpoint(checkpoint, path)
+
+        self.model_without_ddp.load_state_dict(checkpoint["model_state"])
+        model_task_count = checkpoint.get("model_attrs", {}).get("task_count")
+        if model_task_count is not None and hasattr(self.model_without_ddp, "task_count"):
+            self.model_without_ddp.task_count = int(model_task_count)
+
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        self._move_optimizer_state_to_device()
+        self.scheduler.load_state_dict(checkpoint["scheduler_state"])
+        scaler_state = checkpoint.get("scaler_state")
+        if scaler_state is not None:
+            self.scaler.load_state_dict(scaler_state)
+
+        trainer_state = checkpoint.get("trainer_state", {})
+        if "task_id" in trainer_state and trainer_state["task_id"] is not None:
+            self.task_id = int(trainer_state["task_id"])
+        self.exposed_classes = [
+            int(item)
+            for item in trainer_state.get("exposed_classes", self.exposed_classes)
+        ]
+        mask = trainer_state.get("mask")
+        if torch.is_tensor(mask):
+            self.mask = mask.to(self.device)
+        self.online_samples_seen = int(trainer_state.get("online_samples_seen", 0))
+        next_stream_eval_at = trainer_state.get(
+            "next_stream_eval_at",
+            self._next_stream_eval_at,
+        )
+        self._next_stream_eval_at = (
+            None if next_stream_eval_at is None else int(next_stream_eval_at)
+        )
+        self._loaded_base_samples_seen = int(trainer_state.get("samples_cnt", 0))
+        self._loaded_base_stage_metrics_payload = list(
+            checkpoint.get("stage_metrics", [])
+        )
+        self._restore_rng_state(checkpoint.get("rng_state"))
+        self._base_checkpoint_loaded = True
+        self.phase = "base_loaded"
+        logger.info(
+            "Loaded reusable base-stage checkpoint from %s | samples=%s | task_id=%s | model_task_count=%s",
+            path,
+            self._loaded_base_samples_seen,
+            getattr(self, "task_id", None),
+            getattr(self.model_without_ddp, "task_count", None),
+        )
+        if self.distributed:
+            dist.barrier()
+
     def _format_metric_value(self, value):
         return "n/a" if value is None else f"{value:.4f}"
 
@@ -676,9 +939,13 @@ class _Trainer():
 
         self._evaluate_and_log_stage(base_stage_id, stage_metrics)
         self.online_after_task(base_stage_id)
+        self._save_base_checkpoint(stage_metrics, samples_cnt)
         return samples_cnt, num_report
 
     def _run_protocol_loop(self):
+        if self.save_base_checkpoint and self._base_stage_id() is None:
+            raise ValueError("--save_base_checkpoint requires --base_stage_epochs > 0.")
+
         logger.info(
             "[2] Base stage training followed by online continual learning (%s stages, binary labels)",
             self.protocol_stage_count,
@@ -687,15 +954,32 @@ class _Trainer():
         online_samples_cnt = 0
         num_report = 2000
         report_period = 500
-        stage_metrics = []
+        stage_metrics = [
+            self._stage_metric_from_payload(payload)
+            for payload in self._loaded_base_stage_metrics_payload
+        ]
         stream_metrics = []
+        samples_cnt = int(self._loaded_base_samples_seen)
+        while num_report <= samples_cnt:
+            num_report += report_period
 
-        samples_cnt, num_report = self._run_base_stage(
-            stage_metrics,
-            samples_cnt,
-            num_report,
-            report_period,
-        )
+        if self._base_checkpoint_loaded:
+            logger.info(
+                "Skipping supervised base stage because a reusable base checkpoint was loaded."
+            )
+        else:
+            samples_cnt, num_report = self._run_base_stage(
+                stage_metrics,
+                samples_cnt,
+                num_report,
+                report_period,
+            )
+
+        if self.base_checkpoint_only:
+            logger.info("Base checkpoint-only mode requested; stopping before online stages.")
+            self.phase = "done"
+            self._save_protocol_summary(stage_metrics, stream_metrics)
+            return
 
         self.phase = "stream"
         online_stage_ids = self._online_stage_ids()
@@ -978,6 +1262,7 @@ class _Trainer():
 
             logger.info(f"[1] Select a GCL method ({self.method})")
             self.setup_distributed_model()
+            self._load_base_checkpoint_if_requested()
 
             self._run_protocol_loop()
         finally:

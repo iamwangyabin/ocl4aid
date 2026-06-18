@@ -49,6 +49,10 @@ def _framework_defaults(payload):
         ("train", "lr"): "lr",
         ("train", "online_iter"): "online_iter",
         ("train", "base_stage_epochs"): "base_stage_epochs",
+        ("train", "save_base_checkpoint"): "save_base_checkpoint",
+        ("train", "base_checkpoint_dir"): "base_checkpoint_dir",
+        ("train", "load_base_checkpoint"): "load_base_checkpoint",
+        ("train", "base_checkpoint_only"): "base_checkpoint_only",
         ("train", "stage_blurry_n"): "stage_blurry_n",
         ("train", "stage_blurry_m"): "stage_blurry_m",
         ("train", "transforms"): "transforms",
@@ -149,6 +153,24 @@ def base_parser():
     parser.add_argument("--online_iter", type=float, default=defaults.get("online_iter", 1), help="number of model updates per samples seen.")
     parser.add_argument("--base_stage_epochs", type=int, default=defaults.get("base_stage_epochs", 1),
                         help="Supervised epochs on protocol stage 0 before online continual learning starts. Set 0 to disable.")
+    parser.add_argument("--save_base_checkpoint", action="store_true",
+                        default=defaults.get("save_base_checkpoint", False),
+                        help="Save a reusable checkpoint after the supervised base stage.")
+    parser.add_argument("--no_save_base_checkpoint", dest="save_base_checkpoint",
+                        action="store_false",
+                        help="Disable base-stage checkpoint saving even if enabled by YAML.")
+    parser.add_argument("--base_checkpoint_dir", type=str,
+                        default=defaults.get("base_checkpoint_dir"),
+                        help="Directory for automatic base-stage checkpoints. Defaults to <log_path>/base_checkpoints.")
+    parser.add_argument("--load_base_checkpoint", type=str,
+                        default=defaults.get("load_base_checkpoint"),
+                        help="Load a saved base-stage checkpoint before online learning. Use 'auto' for the default path.")
+    parser.add_argument("--base_checkpoint_only", action="store_true",
+                        default=defaults.get("base_checkpoint_only", False),
+                        help="Stop after loading or saving the base stage; useful for precomputing reusable bases.")
+    parser.add_argument("--no_base_checkpoint_only", dest="base_checkpoint_only",
+                        action="store_false",
+                        help="Disable base-stage-only mode even if enabled by YAML.")
     parser.add_argument("--stage_blurry_n", "--blurry_n", "--n", dest="stage_blurry_n",
                         type=int, default=defaults.get("stage_blurry_n", 100),
                         help="Percent of each protocol stage kept as hard-boundary home samples. 100 recovers the strict stream.")
