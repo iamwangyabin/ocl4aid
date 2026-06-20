@@ -18,7 +18,7 @@ train:
   workers: 24
   # Global online exposure batch size; DDP splits this evenly across ranks.
   batch_size: 16
-  lr: 0.05
+  lr: 0.001
   online_iter: 1
   # Stage 0 (ProGAN) is a supervised base stage. OCL starts at stage 1.
   base_stage_epochs: 10
