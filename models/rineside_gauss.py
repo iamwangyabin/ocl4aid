@@ -23,6 +23,7 @@ class RineSideGauss(nn.Module):
         rine_gauss_var_floor: float = 1e-4,
         rine_gauss_min_count: int = 2,
         rine_gauss_aggregation: str = "logmeanexp",
+        rine_gauss_feature_layers="quartile",
         pretrained: bool = True,
         **kwargs,
     ):
@@ -59,7 +60,13 @@ class RineSideGauss(nn.Module):
 
         self.depth = len(self.backbone.blocks)
         self.embed_dim = int(getattr(self.backbone, "embed_dim", self.backbone.num_features))
-        self.feature_dim = self.depth * self.embed_dim
+        self.feature_layers = self._resolve_feature_layers(rine_gauss_feature_layers)
+        self.feature_dim = len(self.feature_layers) * self.embed_dim
+        logger.info(
+            "RINE-side Gaussian feature layers: %s of %s blocks",
+            [layer + 1 for layer in self.feature_layers],
+            self.depth,
+        )
 
         self.register_buffer("counts", torch.zeros(self.task_num, self.num_classes))
         self.register_buffer("means", torch.zeros(self.task_num, self.num_classes, self.feature_dim))
@@ -67,6 +74,60 @@ class RineSideGauss(nn.Module):
 
         # Keeps DDP happy for a statistics-only method. The trainer never steps it.
         self.ddp_anchor = nn.Parameter(torch.zeros(()))
+
+    def _resolve_feature_layers(self, spec):
+        depth = len(self.backbone.blocks)
+        if depth <= 0:
+            raise ValueError("RINE-side Gaussian requires a block-based ViT backbone")
+
+        if spec is None:
+            spec = "quartile"
+
+        if isinstance(spec, str):
+            text = spec.strip().lower()
+            if text in {"all", "every"}:
+                return list(range(depth))
+            if text in {"quartile", "quarters", "four", "4"}:
+                return self._quartile_feature_layers(depth)
+            if text == "last4":
+                return list(range(max(depth - 4, 0), depth))
+            tokens = text.replace(",", " ").split()
+            if not tokens:
+                raise ValueError("rine_gauss_feature_layers must not be empty")
+            try:
+                values = [int(token) for token in tokens]
+            except ValueError as exc:
+                raise ValueError(
+                    "rine_gauss_feature_layers must be 'quartile', 'all', 'last4', "
+                    "or a comma-separated 1-based block list"
+                ) from exc
+        else:
+            values = [int(item) for item in spec]
+
+        if all(1 <= value <= depth for value in values):
+            layers = [value - 1 for value in values]
+        elif all(0 <= value < depth for value in values):
+            layers = values
+        else:
+            raise ValueError(
+                f"rine_gauss_feature_layers values must be 1..{depth} "
+                f"(or 0..{depth - 1} for zero-based lists), got {values}"
+            )
+
+        layers = sorted(set(layers))
+        if not layers:
+            raise ValueError("rine_gauss_feature_layers selected no layers")
+        return layers
+
+    @staticmethod
+    def _quartile_feature_layers(depth: int):
+        layers = []
+        for pos in range(1, 5):
+            layer = math.ceil(depth * pos / 4.0) - 1
+            layer = min(max(layer, 0), depth - 1)
+            if layer not in layers:
+                layers.append(layer)
+        return layers
 
     @torch.no_grad()
     def extract_z(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -79,8 +140,11 @@ class RineSideGauss(nn.Module):
         x = self.backbone.pos_drop(x + pos_embed)
 
         cls_tokens = []
-        for block in self.backbone.blocks:
+        selected_layers = set(self.feature_layers)
+        for layer_idx, block in enumerate(self.backbone.blocks):
             x = block(x)
+            if layer_idx not in selected_layers:
+                continue
             if getattr(self.backbone, "cls_token", None) is not None:
                 cls_tokens.append(x[:, 0])
             else:

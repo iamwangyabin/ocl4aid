@@ -61,3 +61,4 @@ sdlora_ortho_weight: 0.0
 rine_gauss_var_floor: 0.0001
 rine_gauss_min_count: 2
 rine_gauss_aggregation: logmeanexp
+rine_gauss_feature_layers: quartile

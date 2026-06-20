@@ -311,6 +311,8 @@ def base_parser():
     parser.add_argument("--rine_gauss_aggregation", type=str, default=defaults.get("rine_gauss_aggregation"),
                         choices=["logmeanexp", "logsumexp", "mean", "max"],
                         help="How to aggregate per-stage Gaussian log-likelihoods.")
+    parser.add_argument("--rine_gauss_feature_layers", type=str, default=defaults.get("rine_gauss_feature_layers"),
+                        help="Feature blocks for RINE-side Gaussian: 'quartile', 'all', 'last4', or comma-separated 1-based block numbers.")
 
     args = parser.parse_args()
     if args.method is None:
