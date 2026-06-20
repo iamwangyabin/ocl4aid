@@ -800,6 +800,38 @@ class _Trainer():
     def _format_metric_value(self, value):
         return "n/a" if value is None else f"{value:.4f}"
 
+    def _log_protocol_eval_details(self, stage_metric: StageMetrics, *, stream_sample=None):
+        if stream_sample is None:
+            logger.info(
+                "Protocol Eval Detail | stage %s | generator | acc | f1 | ap | auc",
+                stage_metric.stage_id,
+            )
+            row_format = (
+                "Protocol Eval Detail | stage %s | %s | acc %s | f1 %s | ap %s | auc %s"
+            )
+            row_args_prefix = (stage_metric.stage_id,)
+        else:
+            logger.info(
+                "Protocol Stream Eval Detail | online_sample %s | stage %s | generator | acc | f1 | ap | auc",
+                stream_sample,
+                stage_metric.stage_id,
+            )
+            row_format = (
+                "Protocol Stream Eval Detail | online_sample %s | stage %s | %s | acc %s | f1 %s | ap %s | auc %s"
+            )
+            row_args_prefix = (stream_sample, stage_metric.stage_id)
+
+        for generator_name, metrics in stage_metric.internal_metrics_by_generator.items():
+            logger.info(
+                row_format,
+                *row_args_prefix,
+                generator_name,
+                self._format_metric_value(metrics.get("accuracy")),
+                self._format_metric_value(metrics.get("f1")),
+                self._format_metric_value(metrics.get("ap")),
+                self._format_metric_value(metrics.get("auc")),
+            )
+
     def _log_protocol_eval(self, stage_metric: StageMetrics, stage_name: str, *, stream_sample=None):
         internal_avg = {
             metric_name: self._protocol_eval_average(stage_metric, metric_name)
@@ -841,6 +873,8 @@ class _Trainer():
             )
             prefix = "protocol_stream"
             step = stream_sample
+
+        self._log_protocol_eval_details(stage_metric, stream_sample=stream_sample)
 
         swanlab_metrics = {
             f"{prefix}/stage": stage_metric.stage_id,
