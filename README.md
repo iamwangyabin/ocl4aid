@@ -51,8 +51,9 @@ to the learner remains binary.
 arrives.
 
 `--base_stage_epochs` controls how many supervised epochs are run on stage 0
-before the online continual stream starts. The default is 1. Set it to 0 only
-when stage 0 should be included in the online continual stream instead.
+before the online continual stream starts. The default framework config uses
+10 epochs. Set it to 0 only when stage 0 should be included in the online
+continual stream instead.
 
 `--batchsize` is the global online exposure batch size, not a per-GPU batch
 size. In distributed training the trainer splits it evenly across ranks before
@@ -83,7 +84,7 @@ Precompute and save the base stage:
 python3 main.py \
   --config configs/framework/caidbench.yaml \
   --method flyprompt \
-  --base_stage_epochs 5 \
+  --base_stage_epochs 10 \
   --save_base_checkpoint \
   --base_checkpoint_only \
   --no_swanlab
@@ -104,7 +105,7 @@ Reuse it in an online run:
 python3 main.py \
   --config configs/framework/caidbench.yaml \
   --method flyprompt \
-  --base_stage_epochs 5 \
+  --base_stage_epochs 10 \
   --load_base_checkpoint auto \
   --stage_blurry_n 50 \
   --stage_blurry_m 20 \

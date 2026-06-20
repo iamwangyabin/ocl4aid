@@ -1,4 +1,6 @@
-# SPrompt settings and optional routing/head settings.
+# SPrompt method settings. Framework-level run settings stay in
+# configs/framework/caidbench.yaml; the current paper setup uses
+# vit_base_patch16_224, the ImageNet-21k ViT-B/16 checkpoint.
 len_prompt: 20
 pos_prompt: [0, 1, 2, 3, 4]
 use_rp_gate: false

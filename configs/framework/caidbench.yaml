@@ -21,7 +21,7 @@ train:
   lr: 0.05
   online_iter: 1
   # Stage 0 (ProGAN) is a supervised base stage. OCL starts at stage 1.
-  base_stage_epochs: 1
+  base_stage_epochs: 10
   # Temporal generator-stage blur. n=100,m=0 recovers hard boundaries.
   stage_blurry_n: 100
   stage_blurry_m: 0

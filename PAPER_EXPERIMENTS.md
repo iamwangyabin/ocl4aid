@@ -9,7 +9,7 @@ All method comparisons should use the same framework configuration unless a
 table explicitly states otherwise.
 
 ```text
-base_stage_epochs = 5
+base_stage_epochs = 10
 backbone = vit_base_patch16_224
 online_iter = 1
 batchsize = 16
@@ -17,8 +17,8 @@ eval_interval = 20000
 ```
 
 Stage 0 is the supervised base stage. In the default protocol this is ProGAN.
-With `base_stage_epochs=5`, every method first trains a supervised base detector
-on ProGAN for 5 epochs, then online continual learning starts from stage 1.
+With `base_stage_epochs=10`, every method first trains a supervised base detector
+on ProGAN for 10 epochs, then online continual learning starts from stage 1.
 Do not compare methods with different base-stage budgets.
 
 The base stage checkpoint can be saved once per method/seed and reused across
@@ -96,7 +96,7 @@ requires multi-seed averaging.
 Run all methods under:
 
 ```text
-base_stage_epochs = 5
+base_stage_epochs = 10
 stage_blurry_n = 50
 stage_blurry_m = 20
 actual leakage = 10%
@@ -124,7 +124,7 @@ singleprompt, sdlora, hide, norga, hide_lora, hide_adapter
 Run the same methods under:
 
 ```text
-base_stage_epochs = 5
+base_stage_epochs = 10
 stage_blurry_n = 100
 stage_blurry_m = 0
 actual leakage = 0%
@@ -212,7 +212,7 @@ current remote run explicitly overrides the framework YAML defaults so that the
 paper common setup is used:
 
 ```text
-base_stage_epochs = 5
+base_stage_epochs = 10
 backbone = vit_base_patch16_224
 online_iter = 1
 batchsize = 16
@@ -220,6 +220,24 @@ eval_interval = 20000
 seeds = 1
 methods = flyprompt, l2p, dualprompt, codaprompt, mvp, ranpac
 base_checkpoint_args = --save_base_checkpoint --base_checkpoint_dir <machine>/run_logs/base_checkpoints
+```
+
+Current A6000 SPrompt run configuration:
+
+```text
+method = sprompt
+stream = main blurry
+stage_blurry_n = 50
+stage_blurry_m = 20
+base_stage_epochs = 10
+backbone = vit_base_patch16_224
+pretraining = ImageNet-21k ViT-B/16, ViT-B_16.npz
+seed = 1
+batchsize = 16
+online_iter = 1
+eval_interval = 20000
+n_worker = 8
+base_checkpoint_args = --save_base_checkpoint --base_checkpoint_dir /home/home/yabin/ocl4aid/run_logs/base_checkpoints
 ```
 
 The older CAID experiment logs were moved into per-machine
@@ -232,7 +250,7 @@ Current machine assignment and status:
 | Machine | Stream setting | Plan id | Remote commit | Data root | Status |
 | --- | --- | --- | --- | --- | --- |
 | `4090-2` | Main blurry, `n=50,m=20`, leakage 10% | `mbrpfix0620` | `78fcf03` | `/home/yabin/CAIDBench` | running single-seed `ranpac` |
-| `A6000` | Hard control, `n=100,m=0`, leakage 0% | `caid_hard_baseckpt_core_s1to3_20260618` | `a7457c6` | `/home/home/yabin/CAIDBench` | stopped on 2026-06-20; do not resume multi-seed queue |
+| `A6000` | Main blurry, `n=50,m=20`, leakage 10% | `sprompt_mainblurry_base10_s1_20260620` | latest `main` | `/home/home/yabin/CAIDBench` | planned single-seed `sprompt` run |
 
 Launcher script:
 
@@ -240,7 +258,7 @@ Launcher script:
 scripts/launch_caid_experiment_queue.sh
 ```
 
-Main blurry logs and base checkpoints on `4090-2`:
+Legacy base-5 main blurry logs and base checkpoints on `4090-2`:
 
 ```text
 /home/yabin/ocl4aid/run_logs/caid_mainblurry_baseckpt_core_s1to3_20260618/
@@ -248,18 +266,18 @@ Main blurry logs and base checkpoints on `4090-2`:
 /home/yabin/ocl4aid/run_logs/base_checkpoints/
 ```
 
-Hard control logs and base checkpoints on `A6000`:
+A6000 SPrompt main blurry logs and base checkpoints:
 
 ```text
-/home/home/yabin/ocl4aid/run_logs/caid_hard_baseckpt_core_s1to3_20260618/
-/home/home/yabin/ocl4aid/run_logs/caid_hard_<method>_base5_s1-2-3_a7457c6/
+/home/home/yabin/ocl4aid/run_logs/sprompt_mainblurry_base10_s1_20260620/
+/home/home/yabin/ocl4aid/run_logs/caid_mainblurry_sprompt_base10_s1_<commit>/
 /home/home/yabin/ocl4aid/run_logs/base_checkpoints/
 ```
 
 Reusable base checkpoint filename pattern:
 
 ```text
-base_<method>_vit_base_patch16_224_model_appearance_order_protocol_seed<seed>_stage0_epochs5.pt
+base_<method>_vit_base_patch16_224_model_appearance_order_protocol_seed<seed>_stage0_epochs10.pt
 ```
 
 Future same-machine stream runs can reuse the saved base with:
@@ -272,7 +290,7 @@ Monitoring commands:
 
 ```bash
 ssh 4090-2 "tail -n 80 /home/yabin/ocl4aid/run_logs/caid_mainblurry_baseckpt_core_s1to3_20260618/launcher.log"
-ssh A6000 "tail -n 80 /home/home/yabin/ocl4aid/run_logs/caid_hard_baseckpt_core_s1to3_20260618/launcher.log"
+ssh A6000 "tail -n 80 /home/home/yabin/ocl4aid/run_logs/sprompt_mainblurry_base10_s1_20260620/launcher.log"
 ssh 4090-2 "find /home/yabin/ocl4aid/run_logs/base_checkpoints -maxdepth 1 -type f -name '*.pt' | sort"
 ssh A6000 "find /home/home/yabin/ocl4aid/run_logs/base_checkpoints -maxdepth 1 -type f -name '*.pt' | sort"
 ```
@@ -326,7 +344,7 @@ Precompute reusable base:
 python3 main.py \
   --config configs/framework/caidbench.yaml \
   --method flyprompt \
-  --base_stage_epochs 5 \
+  --base_stage_epochs 10 \
   --save_base_checkpoint \
   --base_checkpoint_only \
   --no_swanlab
@@ -338,11 +356,11 @@ Main blurry:
 python3 main.py \
   --config configs/framework/caidbench.yaml \
   --method flyprompt \
-  --base_stage_epochs 5 \
+  --base_stage_epochs 10 \
   --load_base_checkpoint auto \
   --stage_blurry_n 50 \
   --stage_blurry_m 20 \
-  --note flyprompt_base5_blurry10 \
+  --note flyprompt_base10_blurry10 \
   --no_swanlab
 ```
 
@@ -352,11 +370,11 @@ Hard control:
 python3 main.py \
   --config configs/framework/caidbench.yaml \
   --method flyprompt \
-  --base_stage_epochs 5 \
+  --base_stage_epochs 10 \
   --load_base_checkpoint auto \
   --stage_blurry_n 100 \
   --stage_blurry_m 0 \
-  --note flyprompt_base5_hard \
+  --note flyprompt_base10_hard \
   --no_swanlab
 ```
 
@@ -367,10 +385,10 @@ python3 main.py \
   --config configs/framework/caidbench.yaml \
   --method flyprompt \
   --seeds 1 2 3 4 5 \
-  --base_stage_epochs 5 \
+  --base_stage_epochs 10 \
   --load_base_checkpoint auto \
   --stage_blurry_n 50 \
   --stage_blurry_m 20 \
-  --note flyprompt_base5_blurry10_s5 \
+  --note flyprompt_base10_blurry10_s5 \
   --no_swanlab
 ```
