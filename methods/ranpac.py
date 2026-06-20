@@ -12,6 +12,7 @@ class RanPAC(_Trainer):
         super(RanPAC, self).__init__(*args, **kwargs)
 
         self.task_id = 0
+        self._classifier_finalized_task_id = None
 
     def online_step(self, images, labels, idx):
         self.add_new_class(labels)
@@ -36,22 +37,70 @@ class RanPAC(_Trainer):
         if self.task_id != 0:
             return
 
-        logger.info("Collecting final base-stage features for RanPAC statistics")
+        self._collect_first_task_statistics_and_update(base_stage_id)
+
+    def _collect_first_task_statistics_and_update(self, stage_id):
+        logger.info("Collecting final first-task features for RanPAC statistics")
         model_obj = self.model.module if self.distributed else self.model
         model_obj.setup_rp()
         model_obj.freeze_all_except_classifier()
-        self.train_sampler.set_task(base_stage_id)
-        self.train_sampler.set_epoch(self.base_stage_epochs)
+        self.train_sampler.set_task(stage_id)
+        if stage_id == self._base_stage_id():
+            self.train_sampler.set_epoch(self.base_stage_epochs)
 
         collected = 0
         for batch in self.train_dataloader:
-            if self._skip_empty_batch(batch, "base_feature_collection"):
+            if self._skip_empty_batch(batch, "ranpac_first_task_feature_collection"):
                 continue
             images, labels, _idx = batch
             collected += images.size(0) * self.world_size
             self._collect_features_for_statistics(images, labels)
 
-        logger.info("Collected %s final base-stage samples for RanPAC statistics", collected)
+        logger.info("Collected %s final first-task samples for RanPAC statistics", collected)
+        logger.info("Updating RanPAC first-task classifier before evaluation")
+        model_obj.update_statistics_and_classifier()
+        logger.info("Random projection initialized and classifier updated")
+        self._classifier_finalized_task_id = self.task_id
+
+    def _finalize_classifier_before_eval(self, stage_id):
+        if self._classifier_finalized_task_id == self.task_id:
+            return
+        if self.task_id == 0:
+            self._collect_first_task_statistics_and_update(stage_id)
+            return
+
+        model_obj = self.model.module if self.distributed else self.model
+        logger.info("Updating RanPAC statistics and classifier for task %s before evaluation", self.task_id)
+        model_obj.update_statistics_and_classifier()
+        self._classifier_finalized_task_id = self.task_id
+
+    def _evaluate_and_log_stage(self, stage_id, stage_metrics):
+        self._finalize_classifier_before_eval(stage_id)
+        return super()._evaluate_and_log_stage(stage_id, stage_metrics)
+
+    def _load_base_checkpoint_if_requested(self):
+        path = self._resolve_load_base_checkpoint_path()
+        if path:
+            try:
+                checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+            except TypeError:
+                checkpoint = torch.load(path, map_location="cpu")
+            model_state = checkpoint.get("model_state", {})
+            w_rand = model_state.get("classifier.W_rand")
+            fc_weight = model_state.get("classifier.fc.weight")
+            if (
+                torch.is_tensor(w_rand)
+                and torch.is_tensor(fc_weight)
+                and w_rand.numel() > 0
+                and fc_weight.ndim == 2
+                and fc_weight.shape[1] == w_rand.shape[1]
+            ):
+                model_obj = self.model.module if self.distributed else self.model
+                if not getattr(model_obj.classifier, "rp_initialized", False):
+                    logger.info("Preparing RanPAC random projection before loading base checkpoint")
+                    model_obj.setup_rp()
+
+        return super()._load_base_checkpoint_if_requested()
 
     def _collect_features_for_statistics(self, images, labels):
         images_copy = images.clone()
@@ -157,19 +206,20 @@ class RanPAC(_Trainer):
     def online_after_task(self, cur_iter):
         model_obj = self.model.module if self.distributed else self.model
         if self.task_id == 0:
-            logger.info("Completing first task training, setting up random projection")
-
-            model_obj.setup_rp()
-            model_obj.freeze_all_except_classifier()
-            model_obj.update_statistics_and_classifier()
-
-            logger.info("Random projection initialized, adapters frozen")
+            if self._classifier_finalized_task_id != self.task_id:
+                logger.info("Completing first task training, setting up random projection")
+                model_obj.setup_rp()
+                model_obj.freeze_all_except_classifier()
+                model_obj.update_statistics_and_classifier()
+                logger.info("Random projection initialized, adapters frozen")
         else:
-            logger.info("Updating RanPAC statistics and classifier for task %s", self.task_id)
-            model_obj.update_statistics_and_classifier()
+            if self._classifier_finalized_task_id != self.task_id:
+                logger.info("Updating RanPAC statistics and classifier for task %s", self.task_id)
+                model_obj.update_statistics_and_classifier()
 
         if self.task_id + 1 < getattr(self, "n_tasks", 1):
             self._advance_model_task_count()
 
         logger.info(f"Task {self.task_id} completed, statistics updated")
         self.task_id += 1
+        self._classifier_finalized_task_id = None
