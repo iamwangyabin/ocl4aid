@@ -24,6 +24,16 @@ With `base_stage_epochs=10`, every method first trains a supervised base detecto
 on ProGAN for 10 epochs, then online continual learning starts from stage 1.
 Do not compare methods with different base-stage budgets.
 
+The preferred long-horizon protocol is `CAID-50`, defined by:
+
+```text
+protocol_presets/caidbench/model_appearance_order_protocol_50.yaml
+```
+
+`CAID-50` keeps the original time order, uses 50 generator stages, and requires
+each generator to have a balanced test split of 2000 images: 1000 real and 1000
+fake. This keeps final sample-level and generator-level test summaries aligned.
+
 The base stage checkpoint can be saved once per method/seed and reused across
 stream settings. Use `--save_base_checkpoint --base_checkpoint_only` to
 precompute the base, then use `--load_base_checkpoint auto` for hard, mild,
@@ -193,8 +203,9 @@ avg ap
 
 ### 6. Per-Generator Results
 
-For the main blurry setting, export final per-generator metrics for all 90
-protocol generator stages.
+For the main blurry setting, export final per-generator metrics for all
+generators in the selected protocol. For `CAID-50`, this means all 50 generator
+stages.
 
 Use this for appendix tables or heatmaps:
 
