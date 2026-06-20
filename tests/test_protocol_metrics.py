@@ -4,8 +4,10 @@ import unittest
 
 from protocol_metrics import (
     StageMetrics,
+    build_protocol_metric_matrix,
     compute_binary_detection_metrics,
     compute_online_metrics,
+    compute_protocol_matrix_summary,
 )
 
 
@@ -56,6 +58,47 @@ class ProtocolMetricsTests(unittest.TestCase):
             summary["forgetting_by_stage"],
             summary["accuracy_forgetting_by_stage"],
         )
+
+    def test_protocol_matrix_supports_forward_backward_metrics(self):
+        stage_metrics = [
+            StageMetrics(
+                stage_id=0,
+                internal_metrics_by_generator={
+                    "G1": {"accuracy": 0.8, "f1": 0.75, "ap": 0.9, "auc": 0.8}
+                },
+                external_metrics_by_subset={},
+                new_generators=["G1"],
+                matrix_metrics_by_generator={
+                    "G1": {"accuracy": 0.8, "f1": 0.75, "ap": 0.9, "auc": 0.8},
+                    "G2": {"accuracy": 0.5, "f1": 0.4, "ap": 0.55, "auc": 0.5},
+                },
+            ),
+            StageMetrics(
+                stage_id=1,
+                internal_metrics_by_generator={
+                    "G1": {"accuracy": 0.7, "f1": 0.65, "ap": 0.85, "auc": 0.7},
+                    "G2": {"accuracy": 0.9, "f1": 0.88, "ap": 0.95, "auc": 0.9},
+                },
+                external_metrics_by_subset={},
+                new_generators=["G2"],
+                matrix_metrics_by_generator={
+                    "G1": {"accuracy": 0.7, "f1": 0.65, "ap": 0.85, "auc": 0.7},
+                    "G2": {"accuracy": 0.9, "f1": 0.88, "ap": 0.95, "auc": 0.9},
+                },
+            ),
+        ]
+
+        matrix = build_protocol_metric_matrix(stage_metrics, ["G1", "G2"])
+        self.assertEqual(matrix["metrics"]["auc"], [[0.8, 0.5], [0.7, 0.9]])
+        self.assertFalse(matrix["records"][1]["seen"])
+        self.assertTrue(matrix["records"][3]["seen"])
+
+        summary = compute_protocol_matrix_summary(stage_metrics, ["G1", "G2"])
+        self.assertAlmostEqual(summary["final_avg_auc"], 0.8)
+        self.assertAlmostEqual(summary["final_auc_forgetting"], 0.05)
+        self.assertAlmostEqual(summary["final_auc_bwt"], -0.05)
+        self.assertAlmostEqual(summary["mean_plasticity_auc"], 0.85)
+        self.assertAlmostEqual(summary["fwt_from_base_auc"], 0.0)
 
 
 if __name__ == "__main__":

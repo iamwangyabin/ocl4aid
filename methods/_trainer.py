@@ -22,8 +22,10 @@ from datasets import CAIDBenchmarkProtocol, ConditionalJPEGCompress, OnlineIterD
 from protocol_metrics import (
     DETECTION_METRICS,
     StageMetrics,
+    build_protocol_metric_matrix,
     compute_binary_detection_metrics,
     compute_online_metrics,
+    compute_protocol_matrix_summary,
 )
 from utils.augment import Cutout
 from utils.onlinesampler import ManifestStageSampler
@@ -542,6 +544,7 @@ class _Trainer():
             "stage_id": stage_metric.stage_id,
             "new_generators": stage_metric.new_generators,
             "internal_metrics_by_generator": stage_metric.internal_metrics_by_generator,
+            "matrix_metrics_by_generator": stage_metric.matrix_metrics_by_generator,
             "external_metrics_by_subset": stage_metric.external_metrics_by_subset,
             "internal_accuracy_by_generator": stage_metric.internal_accuracy_by_generator,
             "external_accuracy_by_subset": stage_metric.external_accuracy_by_subset,
@@ -557,6 +560,9 @@ class _Trainer():
                 payload.get("external_metrics_by_subset", {})
             ),
             new_generators=list(payload.get("new_generators", [])),
+            matrix_metrics_by_generator=dict(
+                payload.get("matrix_metrics_by_generator", {})
+            ),
         )
 
     def _base_checkpoint_directory(self):
@@ -653,7 +659,6 @@ class _Trainer():
             ("method", metadata.get("method"), self.method),
             ("backbone", metadata.get("backbone"), self.backbone),
             ("n_classes", metadata.get("n_classes"), self.n_classes),
-            ("n_tasks", metadata.get("n_tasks"), self.n_tasks),
             ("base_stage_id", metadata.get("base_stage_id"), self._base_stage_id()),
             (
                 "base_stage_epochs",
@@ -674,7 +679,29 @@ class _Trainer():
         saved_generators = metadata.get("protocol_generators")
         current_generators = self._protocol_generator_names()
         if saved_generators != current_generators:
-            mismatches.append("protocol generator order differs")
+            base_stage_id = self._base_stage_id()
+            saved_base_generator = (
+                saved_generators[base_stage_id]
+                if isinstance(saved_generators, list)
+                and base_stage_id is not None
+                and 0 <= base_stage_id < len(saved_generators)
+                else None
+            )
+            current_base_generator = (
+                current_generators[base_stage_id]
+                if base_stage_id is not None and 0 <= base_stage_id < len(current_generators)
+                else None
+            )
+            if saved_base_generator != current_base_generator:
+                mismatches.append("protocol generator order differs")
+            else:
+                logger.warning(
+                    "Reusing base checkpoint across protocol changes: saved_n_tasks=%s current_n_tasks=%s saved_base=%s current_base=%s",
+                    metadata.get("n_tasks"),
+                    self.n_tasks,
+                    saved_base_generator,
+                    current_base_generator,
+                )
 
         if mismatches:
             details = "; ".join(mismatches)
@@ -936,11 +963,50 @@ class _Trainer():
             dist.barrier()
         if self.is_main_process():
             stage_name = self.protocol_generator_order[stage_id]["generator_name"]
-            stage_metric = self._evaluate_protocol_stage(stage_id)
+            stage_metric = self._evaluate_protocol_stage(
+                stage_id,
+                include_full_matrix=True,
+            )
             stage_metrics.append(stage_metric)
             self._log_protocol_eval(stage_metric, stage_name)
         if self.distributed:
             dist.barrier()
+
+    def _ensure_current_base_matrix_eval(self, stage_metrics):
+        base_stage_id = self._base_stage_id()
+        if base_stage_id is None:
+            return stage_metrics
+
+        current_generators = self._protocol_generator_names()
+        current_base_metric = next(
+            (item for item in stage_metrics if item.stage_id == base_stage_id),
+            None,
+        )
+        if current_base_metric is not None:
+            matrix = current_base_metric.matrix_metrics_by_generator
+            if matrix and all(name in matrix for name in current_generators):
+                return stage_metrics
+
+        if self.distributed:
+            dist.barrier()
+        if self.is_main_process():
+            logger.info(
+                "Evaluating loaded base checkpoint on full current protocol matrix"
+            )
+            stage_name = self.protocol_generator_order[base_stage_id]["generator_name"]
+            base_metric = self._evaluate_protocol_stage(
+                base_stage_id,
+                include_full_matrix=True,
+            )
+            self._log_protocol_eval(base_metric, stage_name)
+            stage_metrics = [
+                item for item in stage_metrics if item.stage_id != base_stage_id
+            ]
+            stage_metrics.append(base_metric)
+            stage_metrics.sort(key=lambda item: item.stage_id)
+        if self.distributed:
+            dist.barrier()
+        return stage_metrics
 
     def _run_base_stage(self, stage_metrics, samples_cnt, num_report, report_period):
         base_stage_id = self._base_stage_id()
@@ -1010,6 +1076,7 @@ class _Trainer():
             logger.info(
                 "Skipping supervised base stage because a reusable base checkpoint was loaded."
             )
+            stage_metrics = self._ensure_current_base_matrix_eval(stage_metrics)
         else:
             samples_cnt, num_report = self._run_base_stage(
                 stage_metrics,
@@ -1077,6 +1144,7 @@ class _Trainer():
         if not self.is_main_process():
             return
         metrics = compute_online_metrics(stage_metrics)
+        generator_order = self._protocol_generator_names()
         summary = {
             "stage_metrics": [
                 self._protocol_metric_payload(item)
@@ -1084,6 +1152,14 @@ class _Trainer():
             ],
             "stream_metrics": stream_metrics,
             "metrics": metrics,
+            "protocol_matrix": build_protocol_metric_matrix(
+                stage_metrics,
+                generator_order,
+            ),
+            "final_summary": compute_protocol_matrix_summary(
+                stage_metrics,
+                generator_order,
+            ),
         }
         output_path = os.path.join(self.log_dir, f"seed_{self.rnd_seed}_ocl_metrics.json")
         with open(output_path, "w", encoding="utf-8") as handle:
@@ -1119,7 +1195,12 @@ class _Trainer():
         )
         return total
 
-    def _evaluate_protocol_stage(self, stage_id: int) -> StageMetrics:
+    def _evaluate_protocol_stage(
+        self,
+        stage_id: int,
+        *,
+        include_full_matrix: bool = False,
+    ) -> StageMetrics:
         self.model.eval()
         seen_generators = [
             entry["generator_name"]
@@ -1129,13 +1210,33 @@ class _Trainer():
         stage_generators = getattr(self.train_dataset, "stage_generators", {}).get(stage_id, [])
         self._prepare_protocol_eval()
 
-        internal_scores = {}
-        for generator_name in seen_generators:
+        eval_generators = (
+            self._protocol_generator_names()
+            if include_full_matrix
+            else seen_generators
+        )
+        eval_scores = {}
+        for generator_name in eval_generators:
             if generator_name not in self.test_dataset.internal_slices:
                 continue
-            internal_scores[generator_name] = self._evaluate_protocol_slice(
+            eval_scores[generator_name] = self._evaluate_protocol_slice(
                 self.test_dataset.internal_slices[generator_name]
             )
+        if include_full_matrix:
+            logger.info(
+                "Protocol Matrix Eval | stage %s | evaluated %s generator slices",
+                stage_id,
+                len(eval_scores),
+            )
+            internal_scores = {
+                generator_name: eval_scores[generator_name]
+                for generator_name in seen_generators
+                if generator_name in eval_scores
+            }
+            matrix_scores = eval_scores
+        else:
+            internal_scores = eval_scores
+            matrix_scores = {}
 
         return StageMetrics(
             stage_id=stage_id,
@@ -1144,6 +1245,7 @@ class _Trainer():
             new_generators=(
                 [current_generator] if current_generator in stage_generators else []
             ),
+            matrix_metrics_by_generator=matrix_scores,
         )
 
     def _prepare_protocol_eval(self):
