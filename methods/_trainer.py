@@ -345,7 +345,7 @@ class _Trainer():
             transforms.Normalize(mean, std),
         ])
         self.test_transform = transforms.Compose([
-            ConditionalJPEGCompress(quality=80, recompress_if_jpeg_quality_above=80),
+            # ConditionalJPEGCompress(quality=80, recompress_if_jpeg_quality_above=80),
             transforms.Resize((inp_size, inp_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean, std),
