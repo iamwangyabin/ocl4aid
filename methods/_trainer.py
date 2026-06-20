@@ -2,6 +2,7 @@ import datetime
 import atexit
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -492,7 +493,14 @@ class _Trainer():
         self.criterion = getattr(self.model_without_ddp, "loss_fn", nn.CrossEntropyLoss(reduction="mean"))
         self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
         self.lr_gamma = 0.9999
-        self.scheduler = select_scheduler(self.sched_name, self.optimizer, self.lr_gamma)
+        self.scheduler = select_scheduler(self.sched_name, self.optimizer, self._scheduler_hparams())
+        logger.info(
+            "Optimizer/Scheduler | optimizer=%s | lr=%s | scheduler=%s | t_max=%s",
+            self.opt_name,
+            self.lr,
+            self.sched_name,
+            self._scheduler_step_budget(),
+        )
 
         n_params = sum(p.numel() for p in self.model_without_ddp.parameters())
         logger.info(f"Total Parameters :\t{n_params}")
@@ -1396,11 +1404,33 @@ class _Trainer():
 
     def update_schedule(self, reset=False):
         if reset:
-            self.scheduler = select_scheduler(self.sched_name, self.optimizer, self.lr_gamma)
+            self.scheduler = select_scheduler(self.sched_name, self.optimizer, self._scheduler_hparams())
             for param_group in self.optimizer.param_groups:
                 param_group["lr"] = self.lr
         else:
             self.scheduler.step()
+
+    def _estimated_optimizer_steps(self, sample_count):
+        if sample_count <= 0:
+            return 1
+        updates_per_batch = max(1, int(float(getattr(self, "online_iter", 1) or 1)))
+        return max(1, math.ceil(sample_count / max(1, self.global_batchsize)) * updates_per_batch)
+
+    def _scheduler_step_budget(self):
+        configured = int(getattr(self, "scheduler_t_max", 0) or 0)
+        if configured > 0:
+            return configured
+        sample_count = int(getattr(self, "total_training_samples", 0) or 0)
+        if sample_count <= 0:
+            sample_count = int(getattr(self, "total_samples", 0) or 0)
+        return self._estimated_optimizer_steps(sample_count)
+
+    def _scheduler_hparams(self):
+        return {
+            "gamma": self.lr_gamma,
+            "t_max": self._scheduler_step_budget(),
+            "eta_min": float(getattr(self, "scheduler_eta_min", 0.0) or 0.0),
+        }
 
     def is_dist_avail_and_initialized(self):
         if not dist.is_available():

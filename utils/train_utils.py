@@ -5,9 +5,12 @@ from models import MODELS
 
 
 def select_optimizer(opt_name, lr, model):
+    opt_name = (opt_name or "").lower()
 
     if opt_name == "adam":
         opt = optim.Adam(model.parameters(), lr=lr, weight_decay=0)
+    elif opt_name == "adamw":
+        opt = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     elif opt_name == 'adam_adapt':
         fc_params = []
         other_params = []
@@ -41,13 +44,25 @@ def select_optimizer(opt_name, lr, model):
                         {'params': fc_params, 'lr': 0.005}     # Learning rate lr2 for all other layers
                     ], weight_decay=5e-4)
     else:
-        raise NotImplementedError("Please select the opt_name [adam, adam_adapt, sgd, sgd_sl]")
+        raise NotImplementedError("Please select the opt_name [adam, adamw, adam_adapt, sgd, sgd_sl]")
     return opt
 
 def select_scheduler(sched_name, opt, hparam=None):
-    if "exp" in sched_name:
-        scheduler = optim.lr_scheduler.ExponentialLR(opt, gamma=hparam)
-    elif sched_name == "cos":
+    sched_name = (sched_name or "").lower()
+    if isinstance(hparam, dict):
+        gamma = hparam.get("gamma", 0.9999)
+        t_max = max(1, int(hparam.get("t_max", 1) or 1))
+        eta_min = float(hparam.get("eta_min", 0.0) or 0.0)
+    else:
+        gamma = hparam
+        t_max = 1
+        eta_min = 0.0
+
+    if sched_name in {"cosine", "cosine_annealing", "cosineannealing"}:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(opt, T_max=t_max, eta_min=eta_min)
+    elif "exp" in sched_name:
+        scheduler = optim.lr_scheduler.ExponentialLR(opt, gamma=gamma)
+    elif sched_name in {"cos", "cos_warm_restarts"}:
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(opt, T_0=1, T_mult=2)
     elif sched_name == "anneal":
         scheduler = optim.lr_scheduler.ExponentialLR(opt, 1 / 1.1, last_epoch=-1)

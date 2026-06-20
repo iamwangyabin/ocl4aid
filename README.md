@@ -119,6 +119,9 @@ settings live under `configs/methods/`. The loader first reads
 `configs/methods/common.yaml`, then overlays `configs/methods/<method>.yaml`.
 CLI flags still override YAML values.
 
+The default framework optimizer is AdamW with `CosineAnnealingLR`; the learning
+rate is kept in the framework YAML and can be overridden with `--lr`.
+
 Every registered method should have a corresponding method YAML, even when it
 only documents that the method uses common defaults. Keep framework/run
 settings such as data paths, seeds, batch size, and evaluation interval in the

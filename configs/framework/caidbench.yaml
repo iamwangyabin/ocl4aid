@@ -12,8 +12,8 @@ model:
   backbone: vit_base_patch16_224
 
 train:
-  optimizer: sgd
-  scheduler: default
+  optimizer: adamw
+  scheduler: cosine
   amp: true
   workers: 24
   # Global online exposure batch size; DDP splits this evenly across ranks.

@@ -11,6 +11,8 @@ table explicitly states otherwise.
 ```text
 base_stage_epochs = 10
 backbone = vit_base_patch16_224
+optimizer = adamw
+scheduler = cosine
 online_iter = 1
 batchsize = 16
 eval_interval = 20000
@@ -214,6 +216,8 @@ paper common setup is used:
 ```text
 base_stage_epochs = 10
 backbone = vit_base_patch16_224
+optimizer = adamw
+scheduler = cosine
 online_iter = 1
 batchsize = 16
 eval_interval = 20000
