@@ -1,0 +1,4 @@
+# RINE-side Gaussian settings.
+rine_gauss_var_floor: 0.0001
+rine_gauss_min_count: 2
+rine_gauss_aggregation: logmeanexp

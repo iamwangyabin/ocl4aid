@@ -1,0 +1,19 @@
+# DualPrompt prompt layout and optional routing/head settings.
+pos_g_prompt: [0, 1]
+len_g_prompt: 5
+pos_e_prompt: [2, 3, 4]
+len_e_prompt: 20
+g_pool: 1
+e_pool: 10
+prompt_func: prompt_tuning
+lambd: 1.0
+load_pt: false
+mepo_backbone_path:
+cov_path:
+cov_coef: 0.7
+use_rp_gate: false
+use_ema_head: false
+rp_dim: 10000
+rp_ridge: 10000
+ema_ratio: [0.9, 0.99]
+ensemble_method: softmax_max_prob

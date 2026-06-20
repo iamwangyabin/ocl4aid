@@ -1,0 +1,4 @@
+# SinglePrompt settings.
+len_prompt: 20
+pos_prompt: [0, 1, 2, 3, 4]
+logit_type: cos_sim

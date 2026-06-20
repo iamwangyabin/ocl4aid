@@ -1,0 +1,6 @@
+# CodaPrompt expert-prompt settings.
+pos_e_prompt: [0, 1, 2, 3, 4]
+len_e_prompt: 20
+e_pool: 10
+key_dim: 768
+ortho_mu: 0.0

@@ -10,7 +10,7 @@ set -Eeuo pipefail
 : "${CAID_METHODS:?Set CAID_METHODS as a space-separated method list}"
 
 CAID_CONFIG="${CAID_CONFIG:-configs/framework/caidbench.yaml}"
-CAID_SEEDS="${CAID_SEEDS:-1 2 3}"
+CAID_SEEDS="${CAID_SEEDS:-1}"
 CAID_BASE_STAGE_EPOCHS="${CAID_BASE_STAGE_EPOCHS:-5}"
 CAID_N_WORKER="${CAID_N_WORKER:-8}"
 CAID_SWANLAB_PROJECT="${CAID_SWANLAB_PROJECT:-ocl4aid}"

@@ -1,0 +1,6 @@
+# HiDe-Adapter settings.
+num_adapter_layers: 5
+sdlora_rank: 10
+lam_orth: 1
+ca_num_per_class: 200
+ca_steps: 200

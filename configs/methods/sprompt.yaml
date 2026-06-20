@@ -1,0 +1,9 @@
+# SPrompt settings and optional routing/head settings.
+len_prompt: 20
+pos_prompt: [0, 1, 2, 3, 4]
+use_rp_gate: false
+use_ema_head: false
+rp_dim: 10000
+rp_ridge: 10000
+ema_ratio: [0.9, 0.99]
+ensemble_method: softmax_max_prob

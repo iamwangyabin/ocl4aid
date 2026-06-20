@@ -1,0 +1,7 @@
+# HiDe-LoRA settings.
+num_lora_layers: 5
+sdlora_rank: 10
+sdlora_alpha: 0.8
+lam_orth: 1
+ca_num_per_class: 200
+ca_steps: 200

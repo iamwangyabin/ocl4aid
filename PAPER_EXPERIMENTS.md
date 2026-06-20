@@ -84,8 +84,10 @@ Additional methods for complete paper tables when compute allows:
 - `hide_lora`
 - `hide_adapter`
 
-All methods in the same table should use the same seeds, backbone, batch size,
-online update budget, base-stage budget, and evaluation interval.
+All methods in the same table should use the same seed, backbone, batch size,
+online update budget, base-stage budget, and evaluation interval. For
+exploratory remote runs, use a single seed unless a final paper table explicitly
+requires multi-seed averaging.
 
 ## Required Experiments
 
@@ -100,8 +102,9 @@ stage_blurry_m = 20
 actual leakage = 10%
 ```
 
-This is the main paper table. Report final-stage summary metrics averaged over
-seeds.
+This is the main paper table. During exploration, report final-stage summary
+metrics for the selected seed. Run multi-seed averaging only for final paper
+tables after the method set is fixed.
 
 Minimum methods:
 
@@ -201,11 +204,12 @@ generators suffer the most forgetting.
 
 ## Active Execution Plan
 
-Last updated: 2026-06-18 14:00 CST.
+Last updated: 2026-06-20 CST.
 
-The current remote run restarts the core-method execution pass after enabling
-reusable base-stage checkpoints. It explicitly overrides the framework YAML
-defaults so that the paper common setup is used:
+Remote runs should use a single seed by default. Multi-seed runs are reserved
+for final paper tables after the method and stream setting are selected. The
+current remote run explicitly overrides the framework YAML defaults so that the
+paper common setup is used:
 
 ```text
 base_stage_epochs = 5
@@ -213,7 +217,7 @@ backbone = vit_base_patch16_224
 online_iter = 1
 batchsize = 16
 eval_interval = 20000
-seeds = 1, 2, 3
+seeds = 1
 methods = flyprompt, l2p, dualprompt, codaprompt, mvp, ranpac
 base_checkpoint_args = --save_base_checkpoint --base_checkpoint_dir <machine>/run_logs/base_checkpoints
 ```
@@ -223,12 +227,12 @@ The older CAID experiment logs were moved into per-machine
 this run. The A6000-to-4090-1 CAIDBench rsync transfer was not stopped and is
 not part of this experiment plan.
 
-Current machine assignment:
+Current machine assignment and status:
 
-| Machine | Stream setting | Plan id | Remote commit | Data root | Launcher PID |
-| --- | --- | --- | --- | --- | ---: |
-| `4090-2` | Main blurry, `n=50,m=20`, leakage 10% | `caid_mainblurry_baseckpt_core_s1to3_20260618` | `78fcf03` | `/home/yabin/CAIDBench` | `1486876` |
-| `A6000` | Hard control, `n=100,m=0`, leakage 0% | `caid_hard_baseckpt_core_s1to3_20260618` | `a7457c6` | `/home/home/yabin/CAIDBench` | `1739115` |
+| Machine | Stream setting | Plan id | Remote commit | Data root | Status |
+| --- | --- | --- | --- | --- | --- |
+| `4090-2` | Main blurry, `n=50,m=20`, leakage 10% | `mbrpfix0620` | `78fcf03` | `/home/yabin/CAIDBench` | running single-seed `ranpac` |
+| `A6000` | Hard control, `n=100,m=0`, leakage 0% | `caid_hard_baseckpt_core_s1to3_20260618` | `a7457c6` | `/home/home/yabin/CAIDBench` | stopped on 2026-06-20; do not resume multi-seed queue |
 
 Launcher script:
 

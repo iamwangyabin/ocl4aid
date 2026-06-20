@@ -72,8 +72,9 @@ def _framework_defaults(payload):
 
 
 def _method_defaults(method):
-    payload = _load_yaml(Path("configs/methods") / f"{method}.yaml")
-    return payload
+    defaults = _load_yaml(Path("configs/methods") / "common.yaml")
+    defaults.update(_load_yaml(Path("configs/methods") / f"{method}.yaml"))
+    return defaults
 
 
 def base_parser():
@@ -186,55 +187,128 @@ def base_parser():
                         help="Online-phase stream evaluation interval in training samples. <=0 disables periodic stream eval.")
 
     # ============= ViT configurations =============
-    parser.add_argument('--profile', action='store_true', default=False, help='enable profiling for ViT_Prompt')
+    parser.add_argument('--profile', action='store_true', default=defaults.get("profile"), help='enable profiling for ViT_Prompt')
 
     # ============= MISA configurations ============
-    parser.add_argument('--load_pt', action='store_true', default=False, help='load pretrained prompts (MISA)')
+    parser.add_argument('--load_pt', action='store_true', default=defaults.get("load_pt"), help='load pretrained prompts (MISA)')
 
     # ============= MePo configurations ============
-    parser.add_argument('--mepo_backbone_path', type=str, default=None,
+    parser.add_argument('--mepo_backbone_path', type=str, default=defaults.get("mepo_backbone_path"),
                         help='Path to pretrained backbone checkpoint for MEPO backbone override.')
-    parser.add_argument('--cov_path', type=str, default=None,
+    parser.add_argument('--cov_path', type=str, default=defaults.get("cov_path"),
                         help='Path to covariance matrix .npy for MEPO CLS calibration.')
-    parser.add_argument('--cov_coef', type=float, default=0.7,
+    parser.add_argument('--cov_coef', type=float, default=defaults.get("cov_coef"),
                         help='Interpolation coeff between original and MEPO-calibrated CLS (0-1).')
 
+    # ========== Prompt model configurations ==========
+    parser.add_argument("--pos_g_prompt", type=int, nargs="+", default=defaults.get("pos_g_prompt"),
+                        help="Transformer block positions for global prompts.")
+    parser.add_argument("--len_g_prompt", type=int, default=defaults.get("len_g_prompt"),
+                        help="Length of each global prompt.")
+    parser.add_argument("--pos_e_prompt", type=int, nargs="+", default=defaults.get("pos_e_prompt"),
+                        help="Transformer block positions for expert prompts.")
+    parser.add_argument("--len_e_prompt", type=int, default=defaults.get("len_e_prompt"),
+                        help="Length of each expert prompt.")
+    parser.add_argument("--g_pool", type=int, default=defaults.get("g_pool"),
+                        help="Global prompt pool size.")
+    parser.add_argument("--e_pool", type=int, default=defaults.get("e_pool"),
+                        help="Expert prompt pool size.")
+    parser.add_argument("--selection_size", type=int, default=defaults.get("selection_size"),
+                        help="Number of prompts selected from a prompt pool.")
+    parser.add_argument("--prompt_func", type=str, default=defaults.get("prompt_func"),
+                        choices=["prompt_tuning", "prefix_tuning"],
+                        help="Prompt insertion function for compatible methods.")
+    parser.add_argument("--lambd", type=float, default=defaults.get("lambd"),
+                        help="Auxiliary loss coefficient for compatible prompt methods.")
+    parser.add_argument("--key_dim", type=int, default=defaults.get("key_dim"),
+                        help="Prompt key dimension for CodaPrompt.")
+    parser.add_argument("--ortho_mu", type=float, default=defaults.get("ortho_mu"),
+                        help="Orthogonality penalty coefficient for CodaPrompt.")
+    parser.add_argument("--use_mask", action="store_true", default=defaults.get("use_mask"),
+                        help="Enable method-level prompt masking for compatible methods.")
+    parser.add_argument("--no_use_mask", dest="use_mask", action="store_false",
+                        help="Disable method-level prompt masking.")
+    parser.add_argument("--use_contrastiv", action="store_true", default=defaults.get("use_contrastiv"),
+                        help="Enable contrastive objective for compatible methods.")
+    parser.add_argument("--no_use_contrastiv", dest="use_contrastiv", action="store_false",
+                        help="Disable contrastive objective for compatible methods.")
+    parser.add_argument("--use_last_layer", action="store_true", default=defaults.get("use_last_layer"),
+                        help="Use the last-layer feature path for compatible methods.")
+    parser.add_argument("--batchwise_prompt_selection", dest="_batchwise_selection",
+                        action="store_true", default=defaults.get("_batchwise_selection"),
+                        help="Enable batch-wise prompt selection for L2P-style prompt pools.")
+    parser.add_argument("--no_batchwise_prompt_selection", dest="_batchwise_selection",
+                        action="store_false",
+                        help="Disable batch-wise prompt selection.")
+    parser.add_argument("--diversed_prompt_selection", dest="_diversed_selection",
+                        action="store_true", default=defaults.get("_diversed_selection"),
+                        help="Enable frequency-diversified prompt selection for L2P-style prompt pools.")
+    parser.add_argument("--no_diversed_prompt_selection", dest="_diversed_selection",
+                        action="store_false",
+                        help="Disable frequency-diversified prompt selection.")
+
     # ======== HiDe / NoRGa configurations =========
-    parser.add_argument("--lam_orth", type=float, default=defaults.get("lam_orth", 1), help="Orthogonal loss weight for HiDe/NoRGa.")
-    parser.add_argument("--ca_num_per_class", type=int, default=defaults.get("ca_num_per_class", 200), help="Number of CA samples per class for HiDe/NoRGa.")
-    parser.add_argument("--ca_steps", type=int, default=defaults.get("ca_steps", 200), help="Number of CA optimization steps for HiDe/NoRGa.")
+    parser.add_argument("--prefix_len", type=int, default=defaults.get("prefix_len"),
+                        help="Prefix length for HiDe/NoRGa prefix models.")
+    parser.add_argument("--num_prefix_layers", type=int, default=defaults.get("num_prefix_layers"),
+                        help="Number of prefix-injected ViT layers for HiDe/NoRGa.")
+    parser.add_argument("--lam_orth", type=float, default=defaults.get("lam_orth"), help="Orthogonal loss weight for HiDe/NoRGa.")
+    parser.add_argument("--ca_num_per_class", type=int, default=defaults.get("ca_num_per_class"), help="Number of CA samples per class for HiDe/NoRGa.")
+    parser.add_argument("--ca_steps", type=int, default=defaults.get("ca_steps"), help="Number of CA optimization steps for HiDe/NoRGa.")
+
+    # ========== RanPAC configurations ==========
+    parser.add_argument("--adapter_dim", type=int, default=defaults.get("adapter_dim"),
+                        help="Adapter hidden dimension for RanPAC.")
+    parser.add_argument("--ranpac_M", type=int, default=defaults.get("ranpac_M"),
+                        help="Random projection dimension for RanPAC.")
+    parser.add_argument("--ranpac_use_RP", action="store_true", default=defaults.get("ranpac_use_RP"),
+                        help="Enable RanPAC random projection.")
+    parser.add_argument("--no_ranpac_use_RP", dest="ranpac_use_RP", action="store_false",
+                        help="Disable RanPAC random projection.")
+    parser.add_argument("--use_g_prompt", action="store_true", default=defaults.get("use_g_prompt"),
+                        help="Use global prompts instead of adapters in RanPAC.")
+    parser.add_argument("--no_use_g_prompt", dest="use_g_prompt", action="store_false",
+                        help="Use adapters instead of global prompts in RanPAC.")
 
     # ========== SD-LoRA configurations ==========
-    parser.add_argument("--sdlora_rank", type=int, default=defaults.get("sdlora_rank", 10), help="LoRA rank for SD-LoRA (default from original SD-LoRA).")
-    parser.add_argument("--sdlora_alpha", type=float, default=defaults.get("sdlora_alpha", 0.8), help="Scaling factor alpha for SD-LoRA (default from original SD-LoRA).")
-    parser.add_argument("--sdlora_layers", type=str, default=defaults.get("sdlora_layers", "all"), help="Which ViT blocks to apply LoRA to (e.g., 'all', 'last4').")
-    parser.add_argument("--sdlora_ortho_weight", type=float, default=defaults.get("sdlora_ortho_weight", 0.0), help="Orthogonal loss weight for SD-LoRA (0 means disabled).")
+    parser.add_argument("--num_lora_layers", type=int, default=defaults.get("num_lora_layers"),
+                        help="Number of LoRA layers for HiDe-LoRA.")
+    parser.add_argument("--num_adapter_layers", type=int, default=defaults.get("num_adapter_layers"),
+                        help="Number of adapter layers for HiDe-Adapter.")
+    parser.add_argument("--sdlora_rank", type=int, default=defaults.get("sdlora_rank"), help="LoRA rank for SD-LoRA.")
+    parser.add_argument("--sdlora_alpha", type=float, default=defaults.get("sdlora_alpha"), help="Scaling factor alpha for SD-LoRA.")
+    parser.add_argument("--sdlora_layers", type=str, default=defaults.get("sdlora_layers"), help="Which ViT blocks to apply LoRA to (e.g., 'all', 'last4').")
+    parser.add_argument("--sdlora_ortho_weight", type=float, default=defaults.get("sdlora_ortho_weight"), help="Orthogonal loss weight for SD-LoRA (0 means disabled).")
 
     # ========== FlyPrompt configurations ==========
-    parser.add_argument("--len_prompt", type=int, default=defaults.get("len_prompt", 20), help="The length of the prompt for each expert")
-    parser.add_argument("--pos_prompt", type=int, nargs="+", default=defaults.get("pos_prompt", [0, 1, 2, 3, 4]), help="The position of the prompt")
-    parser.add_argument("--logit_type", type=str, default=defaults.get("logit_type", "cos_sim"), choices=["linear", "cos_sim"],
+    parser.add_argument("--len_prompt", type=int, default=defaults.get("len_prompt"), help="The length of the prompt for each expert")
+    parser.add_argument("--pos_prompt", type=int, nargs="+", default=defaults.get("pos_prompt"), help="The position of the prompt")
+    parser.add_argument("--logit_type", type=str, default=defaults.get("logit_type"), choices=["linear", "cos_sim"],
                         help="Classifier logit type for SinglePrompt.")
-    parser.add_argument("--rp_dim", type=int, default=defaults.get("rp_dim", 10000), help="The dimension of the random projection head")
-    parser.add_argument("--rp_ridge", type=float, default=defaults.get("rp_ridge", 1e4), help="The ridge parameter for the random projection head")
-    parser.add_argument("--ema_ratio", type=float, nargs="+", default=defaults.get("ema_ratio", [0.9, 0.99]), help="The EMA ratio for the expert FCs")
-    parser.add_argument("--ensemble_method", type=str, default=defaults.get("ensemble_method", "softmax_max_prob"), choices=["mean", "max_prob", "min_entropy", "softmax_mean", "softmax_max_prob", "softmax_min_entropy"],
+    parser.add_argument("--rp_dim", type=int, default=defaults.get("rp_dim"), help="The dimension of the random projection head")
+    parser.add_argument("--rp_ridge", type=float, default=defaults.get("rp_ridge"), help="The ridge parameter for the random projection head")
+    parser.add_argument("--ema_ratio", type=float, nargs="+", default=defaults.get("ema_ratio"), help="The EMA ratio for the expert FCs")
+    parser.add_argument("--ensemble_method", type=str, default=defaults.get("ensemble_method"), choices=["mean", "max_prob", "min_entropy", "softmax_mean", "softmax_max_prob", "softmax_min_entropy"],
                         help="Ensemble method for combining expert outputs: mean (average), max (maximum), min_entropy (minimum entropy), and softmax variants of these.")
 
     # ========== RPFC gating configurations ==========
-    parser.add_argument("--use_rp_gate", action="store_true", default=defaults.get("use_rp_gate", False),
+    parser.add_argument("--use_rp_gate", action="store_true", default=defaults.get("use_rp_gate"),
                         help="Use FlyPrompt-style RPFC head for task gating in compatible methods (e.g., SPrompt, HiDe/NoRGa, DualPrompt, MVP).")
+    parser.add_argument("--no_use_rp_gate", dest="use_rp_gate", action="store_false",
+                        help="Disable FlyPrompt-style RPFC task gating.")
 
     # ========== EMA head bank configurations ==========
-    parser.add_argument("--use_ema_head", action="store_true", default=defaults.get("use_ema_head", False),
+    parser.add_argument("--use_ema_head", action="store_true", default=defaults.get("use_ema_head"),
                         help="Use EMA-based classifier head bank and ensemble in compatible methods (e.g., SPrompt, HiDe/NoRGa, DualPrompt, MVP).")
+    parser.add_argument("--no_use_ema_head", dest="use_ema_head", action="store_false",
+                        help="Disable EMA-based classifier head bank.")
 
     # ========== RINE-side Gaussian configurations ==========
-    parser.add_argument("--rine_gauss_var_floor", type=float, default=defaults.get("rine_gauss_var_floor", 1e-4),
+    parser.add_argument("--rine_gauss_var_floor", type=float, default=defaults.get("rine_gauss_var_floor"),
                         help="Minimum diagonal variance for RINE-side Gaussian likelihood.")
-    parser.add_argument("--rine_gauss_min_count", type=int, default=defaults.get("rine_gauss_min_count", 2),
+    parser.add_argument("--rine_gauss_min_count", type=int, default=defaults.get("rine_gauss_min_count"),
                         help="Minimum per-class samples required before a stage Gaussian is used.")
-    parser.add_argument("--rine_gauss_aggregation", type=str, default=defaults.get("rine_gauss_aggregation", "logmeanexp"),
+    parser.add_argument("--rine_gauss_aggregation", type=str, default=defaults.get("rine_gauss_aggregation"),
                         choices=["logmeanexp", "logsumexp", "mean", "max"],
                         help="How to aggregate per-stage Gaussian log-likelihoods.")
 

@@ -76,6 +76,9 @@ python3 main.py \
   confidence scores for AP/AUC.
 - AP/AUC may be `None` when the evaluated slice does not contain enough class
   variation.
+- For exploratory remote training runs, use a single seed unless the user
+  explicitly asks for multi-seed averaging. Do not queue multiple seeds by
+  default.
 
 ## Adding or Updating Methods
 

@@ -114,8 +114,15 @@ python3 main.py \
 ## Configuration
 
 Common framework settings live in `configs/framework/caidbench.yaml`. Method
-settings live under `configs/methods/<method>.yaml` when a method needs its own
-hyperparameters. CLI flags still override YAML values.
+settings live under `configs/methods/`. The loader first reads
+`configs/methods/common.yaml`, then overlays `configs/methods/<method>.yaml`.
+CLI flags still override YAML values.
+
+Every registered method should have a corresponding method YAML, even when it
+only documents that the method uses common defaults. Keep framework/run
+settings such as data paths, seeds, batch size, and evaluation interval in the
+framework YAML; keep method architecture and method-specific algorithm settings
+in the method YAML.
 
 ## Train
 

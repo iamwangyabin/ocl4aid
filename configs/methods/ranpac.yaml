@@ -1,0 +1,8 @@
+# RanPAC adapter/random-projection settings.
+adapter_dim: 64
+ranpac_M: 10000
+ranpac_use_RP: true
+use_g_prompt: false
+pos_g_prompt: [0, 1, 2, 3, 4]
+len_g_prompt: 5
+g_pool: 1

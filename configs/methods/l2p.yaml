@@ -1,0 +1,7 @@
+# L2P prompt-pool settings.
+len_e_prompt: 5
+e_pool: 30
+selection_size: 5
+lambd: 0.5
+_batchwise_selection: false
+_diversed_selection: true
