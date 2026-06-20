@@ -937,6 +937,7 @@ class _Trainer():
                 )
                 sys.stdout.flush()
 
+        self.after_base_stage_train(base_stage_id)
         self._evaluate_and_log_stage(base_stage_id, stage_metrics)
         self.online_after_task(base_stage_id)
         self._save_base_checkpoint(stage_metrics, samples_cnt)
@@ -1341,6 +1342,9 @@ class _Trainer():
 
     def online_step(self, images, labels, idx):
         raise NotImplementedError()
+
+    def after_base_stage_train(self, base_stage_id):
+        return None
 
     def _advance_model_task_count(self):
         model_obj = self.model.module if self.distributed else self.model

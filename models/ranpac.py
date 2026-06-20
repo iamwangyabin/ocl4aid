@@ -76,6 +76,7 @@ class RanPACClassifier(nn.Module):
         else:
             self.register_buffer('Q', torch.zeros(feature_dim, num_classes))
             self.register_buffer('G', torch.zeros(feature_dim, feature_dim))
+        self.register_buffer('stats_samples', torch.zeros((), dtype=torch.long))
 
         # Buffers for collecting features and labels during each task
         self.register_buffer('collected_features', torch.empty(0))
@@ -89,22 +90,30 @@ class RanPACClassifier(nn.Module):
             logger.info(f"Random projection initialized: {self.feature_dim} -> {self.M}")
 
     def collect_features_labels(self, features, labels):
-        features = features.detach().cpu()
-        labels = labels.detach().cpu()
+        features = features.detach().float()
+        labels = labels.detach().to(features.device)
+        Y = self.target2onehot(labels, self.num_classes).to(features.device, features.dtype)
 
-        if self.collected_features.numel() == 0:
-            self.collected_features = features
-            self.collected_labels = labels
+        if self.use_RP and self.rp_initialized:
+            features_h = F.relu(features @ self.W_rand.to(features.device))
         else:
-            self.collected_features = torch.cat([self.collected_features, features], dim=0)
-            self.collected_labels = torch.cat([self.collected_labels, labels], dim=0)
+            features_h = features
+
+        self.Q += (features_h.T @ Y).to(self.Q.device)
+        self.G += (features_h.T @ features_h).to(self.G.device)
+        self.stats_samples += labels.numel()
 
     def clear_collected_data(self):
         self.collected_features = torch.empty(0)
         self.collected_labels = torch.empty(0)
 
     def target2onehot(self, targets, num_classes):
-        onehot = torch.zeros(targets.size(0), num_classes)
+        onehot = torch.zeros(
+            targets.size(0),
+            num_classes,
+            device=targets.device,
+            dtype=torch.float32,
+        )
         onehot.scatter_(1, targets.unsqueeze(1), 1)
         return onehot
 
@@ -128,37 +137,17 @@ class RanPACClassifier(nn.Module):
 
     def update_statistics_and_classifier(self):
         """Update Q, G matrices and classifier weights using collected data"""
-        if self.collected_features.numel() == 0:
+        if self.stats_samples.item() == 0:
             logger.warning("No collected features to update statistics")
             return
-
-        features = self.collected_features
-        labels = self.collected_labels
-
-        # Convert labels to one-hot
-        Y = self.target2onehot(labels, self.num_classes)
-
-        if self.use_RP and self.rp_initialized:
-            # Apply random projection with ReLU
-            features_h = F.relu(features @ self.W_rand.cpu())
-        else:
-            features_h = features
 
         # Move Q, G to CPU for computation
         Q_cpu = self.Q.cpu()
         G_cpu = self.G.cpu()
 
-        # Update statistics matrices (all on CPU)
-        Q_cpu = Q_cpu + features_h.T @ Y
-        G_cpu = G_cpu + features_h.T @ features_h
-
-        # Move updated matrices back to original device
-        self.Q = Q_cpu.to(self.Q.device)
-        self.G = G_cpu.to(self.G.device)
-
         # Optimize ridge parameter and compute classifier weights
         # Skip the optimization procedure for online usage
-        if features_h.size(0) > 1:  # Need at least 2 samples for cross-validation
+        if self.stats_samples.item() > 1:  # Need at least 2 samples for cross-validation
             # ridge = self.optimise_ridge_parameter(features_h, Y)
             ridge = 1e5
             Wo = torch.linalg.solve(G_cpu + ridge * torch.eye(G_cpu.size(dim=0)), Q_cpu).T
@@ -166,7 +155,10 @@ class RanPACClassifier(nn.Module):
             # Update classifier weights
             device = self.fc.weight.device
             self.fc.weight.data = Wo.to(device)
-            logger.info("Classifier weights updated using RanPAC statistics")
+            logger.info(
+                "Classifier weights updated using RanPAC statistics from %s samples",
+                self.stats_samples.item(),
+            )
 
         # Clear collected data for next task
         self.clear_collected_data()
@@ -175,6 +167,7 @@ class RanPACClassifier(nn.Module):
         saved_state = {
             'Q': self.Q.clone(),
             'G': self.G.clone(),
+            'stats_samples': self.stats_samples.clone(),
             'collected_features': self.collected_features.clone(),
             'collected_labels': self.collected_labels.clone(),
             'fc_weight': self.fc.weight.data.clone(),
@@ -184,6 +177,7 @@ class RanPACClassifier(nn.Module):
     def restore_classifier_state(self, saved_state):
         self.Q = saved_state['Q']
         self.G = saved_state['G']
+        self.stats_samples = saved_state.get('stats_samples', torch.zeros((), dtype=torch.long))
         self.collected_features = saved_state['collected_features']
         self.collected_labels = saved_state['collected_labels']
         self.fc.weight.data = saved_state['fc_weight']
