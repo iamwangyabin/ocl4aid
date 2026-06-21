@@ -1,6 +1,8 @@
 import torch
 import torch.distributed as dist
+from torch.utils.data import DataLoader, Subset
 
+from datasets import safe_collate_drop_bad
 from methods._trainer import _Trainer
 
 
@@ -11,6 +13,8 @@ class RineSideGauss(_Trainer):
 
     def online_before_task(self, task_id):
         self.task_id = int(task_id)
+        if getattr(self.model_without_ddp, "projector_dim", 0) > 0:
+            self.model_without_ddp.begin_stage(self.task_id)
 
     def online_step(self, images, labels, idx):
         del idx
@@ -23,6 +27,9 @@ class RineSideGauss(_Trainer):
         x = images.to(self.device, non_blocking=True)
         y = y.to(self.device)
         x = self.test_transform_tensor(x)
+
+        if getattr(self.model_without_ddp, "projector_dim", 0) > 0:
+            return self._online_projection_step(x, y)
 
         self.model.eval()
         with torch.no_grad():
@@ -37,6 +44,105 @@ class RineSideGauss(_Trainer):
             acc = torch.sum(preds == y.unsqueeze(1)).item() / y.size(0)
 
         return loss.item(), acc
+
+    def _online_projection_step(self, x, y):
+        model = self.model_without_ddp
+        model.train()
+        model.backbone.eval()
+
+        with torch.no_grad():
+            z = model.extract_z(x)
+            z_all, y_all = self._gather_batch_for_stats(z, y)
+
+        replay_per_class = int(getattr(self, "rine_gauss_replay_per_class", 0) or 0)
+        replay_weight = float(getattr(self, "rine_gauss_replay_weight", 1.0) or 0.0)
+        active_heads = model.active_head_ids()
+        old_heads = [head_id for head_id in active_heads if head_id != self.task_id]
+
+        self.optimizer.zero_grad()
+        with torch.cuda.amp.autocast(enabled=self.use_amp):
+            logits = model.head_logits_from_z(self.task_id, z)
+            logits = logits + self._batch_logit_mask(y)
+            current_loss = self.criterion(logits, y)
+            loss = current_loss
+
+            replay_losses = []
+            if replay_per_class > 0 and replay_weight > 0:
+                for head_id in old_heads:
+                    if not model.has_projected_replay(head_id):
+                        continue
+                    h_current = model.project_z(head_id, z.detach())
+                    replay_x, replay_y = model.sample_projected_replay(
+                        head_id,
+                        replay_per_class,
+                    )
+                    if replay_x.numel() == 0:
+                        continue
+                    mix_x = torch.cat([h_current, replay_x.to(h_current.device)], dim=0)
+                    mix_y = torch.cat([y, replay_y.to(y.device)], dim=0)
+                    replay_logits = model.detector_logits_from_h(head_id, mix_x)
+                    replay_losses.append(self.criterion(replay_logits, mix_y))
+                if replay_losses:
+                    loss = loss + replay_weight * torch.stack(replay_losses).mean()
+
+        _, preds = logits.topk(self.topk, 1, True, True)
+        acc = torch.sum(preds == y.unsqueeze(1)).item() / y.size(0)
+
+        self.scaler.scale(loss).backward()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        self.update_schedule()
+
+        with torch.no_grad():
+            for head_id in old_heads:
+                if not bool(model.head_active[head_id].item()):
+                    continue
+                model.update_projected_statistics_from_z(head_id, z_all, y_all)
+
+        return loss.item(), acc
+
+    def online_after_task(self, task_id):
+        del task_id
+        if getattr(self.model_without_ddp, "projector_dim", 0) <= 0:
+            return
+        self.model_without_ddp.set_train_stage(None)
+        self._rebuild_current_projected_statistics()
+
+    @torch.no_grad()
+    def _rebuild_current_projected_statistics(self):
+        indices = getattr(self.train_dataset, "stage_indices", {}).get(self.task_id, [])
+        if not indices:
+            return
+
+        self.model_without_ddp.eval()
+        self.model_without_ddp.reset_projected_statistics(self.task_id)
+        worker_count = min(int(getattr(self, "n_worker", 0) or 0), 4)
+        loader = DataLoader(
+            Subset(self.online_iter_dataset, indices),
+            batch_size=self.batchsize,
+            shuffle=False,
+            num_workers=worker_count,
+            pin_memory=False,
+            persistent_workers=worker_count > 0,
+            collate_fn=safe_collate_drop_bad,
+        )
+        for batch in loader:
+            if self._skip_empty_batch(batch, f"rineside_stats_stage_{self.task_id}"):
+                continue
+            images, labels, _idx = batch
+            y = labels.clone()
+            for j in range(len(y)):
+                y[j] = self.exposed_classes.index(y[j].item())
+            x = images.to(self.device, non_blocking=True)
+            y = y.to(self.device)
+            x = self.test_transform_tensor(x)
+            z = self.model_without_ddp.extract_z(x)
+            z_all, y_all = self._gather_batch_for_stats(z, y)
+            self.model_without_ddp.update_projected_statistics_from_z(
+                self.task_id,
+                z_all,
+                y_all,
+            )
 
     def _batch_logit_mask(self, y):
         if self.no_batchmask:

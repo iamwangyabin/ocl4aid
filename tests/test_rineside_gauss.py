@@ -59,6 +59,39 @@ class RineSideGaussTests(unittest.TestCase):
         trainable = [name for name, param in model.named_parameters() if param.requires_grad]
         self.assertEqual(trainable, ["ddp_anchor"])
 
+    def test_projected_stage_head_tracks_stats_and_replay(self):
+        torch.manual_seed(0)
+        model = RineSideGauss(
+            backbone_name="vit_tiny_patch16_224",
+            pretrained=False,
+            num_classes=2,
+            task_num=2,
+            rine_gauss_projector_dim=8,
+            rine_gauss_hidden_dim=16,
+            rine_gauss_min_count=2,
+        )
+
+        model.begin_stage(0)
+        images = torch.randn(4, 3, 224, 224)
+        labels = torch.tensor([0, 1, 0, 1])
+        z = model.extract_z(images)
+
+        logits = model.projected_logits_from_z(z)
+        self.assertEqual(logits.shape, (4, 2))
+        self.assertTrue(torch.isfinite(logits).all())
+        self.assertEqual(model.active_head_ids(), [0])
+
+        model.update_projected_statistics_from_z(0, z, labels)
+        self.assertTrue(torch.all(model.proj_counts[0] == torch.tensor([2.0, 2.0])))
+        replay_x, replay_y = model.sample_projected_replay(0, 3)
+        self.assertEqual(replay_x.shape, (6, 8))
+        self.assertEqual(replay_y.tolist(), [0, 0, 0, 1, 1, 1])
+
+        trainable = [name for name, param in model.named_parameters() if param.requires_grad]
+        self.assertTrue(any(name.startswith("projectors.0") for name in trainable))
+        self.assertTrue(any(name.startswith("detectors.0") for name in trainable))
+        self.assertFalse(any(name.startswith("projectors.1") for name in trainable))
+
 
 if __name__ == "__main__":
     unittest.main()

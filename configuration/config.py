@@ -313,6 +313,19 @@ def base_parser():
                         help="How to aggregate per-stage Gaussian log-likelihoods.")
     parser.add_argument("--rine_gauss_feature_layers", type=str, default=defaults.get("rine_gauss_feature_layers"),
                         help="Feature blocks for RINE-side Gaussian: 'quartile', 'all', 'last4', or comma-separated 1-based block numbers.")
+    parser.add_argument("--rine_gauss_projector_dim", type=int, default=defaults.get("rine_gauss_projector_dim"),
+                        help="If positive, use per-stage learned 3072->D projection heads instead of raw-feature Gaussian logits.")
+    parser.add_argument("--rine_gauss_hidden_dim", type=int, default=defaults.get("rine_gauss_hidden_dim"),
+                        help="Hidden dimension for per-stage RINE-side projected detectors.")
+    parser.add_argument("--rine_gauss_head_aggregation", type=str, default=defaults.get("rine_gauss_head_aggregation"),
+                        choices=["mean_logit", "max_logit", "noisy_or"],
+                        help="How to aggregate active per-stage projected detector logits.")
+    parser.add_argument("--rine_gauss_replay_per_class", type=int, default=defaults.get("rine_gauss_replay_per_class"),
+                        help="Gaussian replay samples per binary class for updating old projected detectors.")
+    parser.add_argument("--rine_gauss_replay_weight", type=float, default=defaults.get("rine_gauss_replay_weight"),
+                        help="Weight of old-head Gaussian replay calibration loss.")
+    parser.add_argument("--rine_gauss_cov_shrink", type=float, default=defaults.get("rine_gauss_cov_shrink"),
+                        help="Shrinkage multiplier for full-covariance projected Gaussian replay.")
 
     args = parser.parse_args()
     if args.method is None:
