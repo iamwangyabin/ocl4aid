@@ -719,6 +719,9 @@ class _Trainer():
 
         output_path = self._default_base_checkpoint_path()
         if self.is_main_process():
+            method_state = {}
+            if hasattr(self, "_checkpoint_method_state"):
+                method_state = self._checkpoint_method_state()
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             checkpoint = {
                 "metadata": {
@@ -756,6 +759,7 @@ class _Trainer():
                     self._protocol_metric_payload(item)
                     for item in stage_metrics
                 ],
+                "method_state": method_state,
                 "rng_state": self._collect_rng_state(),
             }
             torch.save(checkpoint, output_path)
@@ -811,6 +815,9 @@ class _Trainer():
         self._loaded_base_stage_metrics_payload = list(
             checkpoint.get("stage_metrics", [])
         )
+        method_state = checkpoint.get("method_state", {})
+        if method_state and hasattr(self, "_load_checkpoint_method_state"):
+            self._load_checkpoint_method_state(method_state)
         self._restore_rng_state(checkpoint.get("rng_state"))
         self._base_checkpoint_loaded = True
         self.phase = "base_loaded"

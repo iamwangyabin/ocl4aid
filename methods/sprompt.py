@@ -199,6 +199,10 @@ class SPrompt(_Trainer):
 
 
     # --------------------------- task boundaries ---------------------------
+    def after_base_stage_train(self, base_stage_id):
+        if len(self._cur_task_features) > 0:
+            self._build_prototypes_for_task(base_stage_id)
+
     def online_before_task(self, task_id):
         self.task_id = task_id
         self._cur_task_features = []
@@ -209,6 +213,21 @@ class SPrompt(_Trainer):
         if self.task_id + 1 < getattr(self, "n_tasks", 1):
             self._advance_model_task_count()
         self._cur_task_features = []
+
+    def _checkpoint_method_state(self):
+        return {
+            "task_prototypes": {
+                int(task_id): prototypes.detach().cpu()
+                for task_id, prototypes in self.task_prototypes.items()
+            },
+        }
+
+    def _load_checkpoint_method_state(self, state):
+        prototypes = state.get("task_prototypes", {})
+        self.task_prototypes = {}
+        for task_id, value in prototypes.items():
+            if torch.is_tensor(value):
+                self.task_prototypes[int(task_id)] = value.detach().cpu().float()
 
     def _ensemble_logits(self, logit_ls):
         """Ensemble a list of logits from online and EMA heads.
