@@ -34,6 +34,19 @@ protocol_presets/caidbench/model_appearance_order_protocol_50.yaml
 each generator to have a balanced test split of 2000 images: 1000 real and 1000
 fake. This keeps final sample-level and generator-level test summaries aligned.
 
+The short-horizon protocol is `CAID-10inc`, defined by:
+
+```text
+protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml
+```
+
+`CAID-10inc` is a faster diagnostic setting with one supervised base generator
+and 10 online incremental generator stages. It should use the same common
+training setup as `CAID-50`, including `base_stage_epochs=10`, backbone,
+optimizer, batch size, online update budget, and evaluation interval. Use it to
+debug method behavior and to provide a compact short-horizon comparison; do not
+mix `CAID-10inc` numbers with the main `CAID-50` table.
+
 The base stage checkpoint can be saved once per method/seed and reused across
 stream settings. Use `--save_base_checkpoint --base_checkpoint_only` to
 precompute the base, then use `--load_base_checkpoint auto` for hard, mild,
@@ -180,7 +193,31 @@ y-axis: average accuracy / f1 / ap / auc
 
 The main figure can show accuracy and AUC. F1 and AP can go to the appendix.
 
-### 5. Final Summary Tables
+### 5. Short-Horizon 10-Increment Comparison
+
+Run the same core methods on `CAID-10inc`:
+
+```text
+protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml
+```
+
+This setting has one supervised base generator and 10 online incremental
+generators. It is mainly for rapid method debugging, ablation checks, and a
+compact short-horizon result table. Keep the same common setup and stream
+setting as the corresponding `CAID-50` experiment. For example, the short main
+blurry run should still use:
+
+```text
+base_stage_epochs = 10
+stage_blurry_n = 50
+stage_blurry_m = 20
+actual leakage = 10%
+```
+
+Report final-stage average metrics and online curves separately from the
+long-horizon `CAID-50` results.
+
+### 6. Final Summary Tables
 
 For each method and stream setting, report final-stage values from
 `seed_<seed>_ocl_metrics.json`.
@@ -201,7 +238,7 @@ avg f1
 avg ap
 ```
 
-### 6. Per-Generator Results
+### 7. Per-Generator Results
 
 For the main blurry setting, export final per-generator metrics for all
 generators in the selected protocol. For `CAID-50`, this means all 50 generator
@@ -215,6 +252,121 @@ generator x method: accuracy / auc / forgetting
 
 This analysis should identify which generators are hardest and which earlier
 generators suffer the most forgetting.
+
+## Paper Table Templates
+
+Use these tables as the final paper experiment skeleton. Fill values from the
+final stage of `seed_<seed>_ocl_metrics.json` unless the table explicitly says
+otherwise. Use `mean ± std` only after multi-seed runs are available; for
+single-seed exploration, fill a single value.
+
+### Table 1. Main Results on CAID-50 Main Blurry
+
+Protocol: `CAID-50`; stream: `stage_blurry_n=50, stage_blurry_m=20`; base:
+ProGAN, 10 epochs.
+
+| Method | Final Avg Acc ↑ | Final Avg AUC ↑ | Final Avg AP ↑ | Final Avg F1 ↑ | AUC Forgetting ↓ | AUC Plasticity ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| FlyPrompt |  |  |  |  |  |  |
+| L2P |  |  |  |  |  |  |
+| DualPrompt |  |  |  |  |  |  |
+| CodaPrompt |  |  |  |  |  |  |
+| MVP |  |  |  |  |  |  |
+| RanPAC |  |  |  |  |  |  |
+| SLCA |  |  |  |  |  |  |
+| SPrompt |  |  |  |  |  |  |
+| SinglePrompt |  |  |  |  |  |  |
+| SD-LoRA |  |  |  |  |  |  |
+| HiDe |  |  |  |  |  |  |
+| NoRGa |  |  |  |  |  |  |
+| HiDe-LoRA |  |  |  |  |  |  |
+| HiDe-Adapter |  |  |  |  |  |  |
+| Ours |  |  |  |  |  |  |
+
+### Table 2. Hard-Control Results on CAID-50
+
+Protocol: `CAID-50`; stream: `stage_blurry_n=100, stage_blurry_m=0`; base:
+ProGAN, 10 epochs. This table isolates clean generator-stage boundaries.
+
+| Method | Final Avg Acc ↑ | Final Avg AUC ↑ | Final Avg AP ↑ | Final Avg F1 ↑ | AUC Forgetting ↓ | AUC Plasticity ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| FlyPrompt |  |  |  |  |  |  |
+| L2P |  |  |  |  |  |  |
+| DualPrompt |  |  |  |  |  |  |
+| CodaPrompt |  |  |  |  |  |  |
+| MVP |  |  |  |  |  |  |
+| RanPAC |  |  |  |  |  |  |
+| Ours |  |  |  |  |  |  |
+
+### Table 3. Blurry Strength Ablation on CAID-50
+
+Use the same method set and base checkpoint policy for all rows. If compute is
+limited, fill this table with core methods only.
+
+| Method | Hard AUC ↑ | Mild AUC ↑ | Main AUC ↑ | Strong AUC ↑ | Hard Fgt ↓ | Mild Fgt ↓ | Main Fgt ↓ | Strong Fgt ↓ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| FlyPrompt |  |  |  |  |  |  |  |  |
+| L2P |  |  |  |  |  |  |  |  |
+| DualPrompt |  |  |  |  |  |  |  |  |
+| CodaPrompt |  |  |  |  |  |  |  |  |
+| MVP |  |  |  |  |  |  |  |  |
+| RanPAC |  |  |  |  |  |  |  |  |
+| Ours |  |  |  |  |  |  |  |  |
+
+### Table 4. Short-Horizon CAID-10inc Results
+
+Protocol: `CAID-10inc`; stream should match the corresponding CAID-50 setting,
+usually main blurry.
+
+| Method | Final Avg Acc ↑ | Final Avg AUC ↑ | Final Avg AP ↑ | Final Avg F1 ↑ | AUC Forgetting ↓ | AUC Plasticity ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| FlyPrompt |  |  |  |  |  |  |
+| L2P |  |  |  |  |  |  |
+| DualPrompt |  |  |  |  |  |  |
+| CodaPrompt |  |  |  |  |  |  |
+| MVP |  |  |  |  |  |  |
+| RanPAC |  |  |  |  |  |  |
+| Ours |  |  |  |  |  |  |
+
+### Table 5. Ablation Study for the Proposed Method
+
+Use CAID-50 main blurry unless stated otherwise.
+
+| Variant | Final Avg Acc ↑ | Final Avg AUC ↑ | Final Avg AP ↑ | Final Avg F1 ↑ | AUC Forgetting ↓ | AUC Plasticity ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Full method |  |  |  |  |  |  |
+| w/o face crop |  |  |  |  |  |  |
+| w/o base checkpoint |  |  |  |  |  |  |
+| w/o online calibration |  |  |  |  |  |  |
+| hard stream only |  |  |  |  |  |  |
+| 10inc short protocol |  |  |  |  |  |  |
+
+### Appendix Table A1. Final Per-Generator Results
+
+Fill one row per generator from the final-stage matrix. Use this table for each
+important method, or convert it into a generator-by-method heatmap.
+
+| Generator | Acc ↑ | AUC ↑ | AP ↑ | F1 ↑ | Forgetting AUC ↓ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| ProGAN |  |  |  |  |  |
+| DeepFakes |  |  |  |  |  |
+| BigGAN |  |  |  |  |  |
+| ... |  |  |  |  |  |
+| Z-Image |  |  |  |  |  |
+
+### Appendix Table A2. Forward and Backward Transfer
+
+Compute these from the full protocol matrix.
+
+| Method | Forward AUC ↑ | Forward AP ↑ | Backward AUC ↑ | Backward AP ↑ | Final Avg AUC ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FlyPrompt |  |  |  |  |  |
+| L2P |  |  |  |  |  |
+| DualPrompt |  |  |  |  |  |
+| CodaPrompt |  |  |  |  |  |
+| MVP |  |  |  |  |  |
+| RanPAC |  |  |  |  |  |
+| Ours |  |  |  |  |  |
 
 ## Active Execution Plan
 
