@@ -1,0 +1,71 @@
+# CAID-10inc short-horizon continual protocol.
+# Stage 0 is the supervised base stage. The remaining 10 stages are curated
+# classic/recent generators kept in their CAID-50 chronological order.
+index_path: continual_index.parquet
+tasks:
+  - id: progan
+    name: "ProGAN"
+    numeric_id: 0
+    filter:
+      include:
+        task_id: 0
+  - id: deepfakes
+    name: "DeepFakes"
+    numeric_id: 1
+    filter:
+      include:
+        task_id: 38
+  - id: biggan
+    name: "BigGAN"
+    numeric_id: 2
+    filter:
+      include:
+        task_id: 85
+  - id: stylegan2
+    name: "StyleGAN2"
+    numeric_id: 6
+    filter:
+      include:
+        task_id: 33
+  - id: ddim
+    name: "DDIM"
+    numeric_id: 12
+    filter:
+      include:
+        task_id: 21
+  - id: ldm
+    name: "LDM"
+    numeric_id: 22
+    filter:
+      include:
+        task_id: 3
+  - id: sd1_5
+    name: "SD1.5"
+    numeric_id: 28
+    filter:
+      include:
+        task_id: 53
+  - id: midjourney_v5
+    name: "Midjourney v5"
+    numeric_id: 32
+    filter:
+      include:
+        task_id: 47
+  - id: sdxl_base
+    name: "SDXL-base"
+    numeric_id: 34
+    filter:
+      include:
+        task_id: 57
+  - id: flux_1
+    name: "FLUX.1"
+    numeric_id: 61
+    filter:
+      include:
+        task_id: 40
+  - id: gpt_image_1
+    name: "GPT-Image-1"
+    numeric_id: 77
+    filter:
+      include:
+        task_id: 43
