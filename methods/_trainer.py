@@ -46,6 +46,7 @@ _LEARNER_KWARG_DENYLIST = {
     "caidbench_protocol",
     "caidbench_index_path",
     "caidbench_image_column",
+    "caidbench_face_bbox_path",
     "eval_interval",
     "base_stage_epochs",
     "save_base_checkpoint",
@@ -369,6 +370,7 @@ class _Trainer():
             protocol_path=self.caidbench_protocol,
             index_path=self.caidbench_index_path,
             image_column=self.caidbench_image_column,
+            face_bbox_path=getattr(self, "caidbench_face_bbox_path", None),
         )
         self.n_classes = len(self.train_dataset.label_space)
         self.online_iter_dataset = OnlineIterDataset(self.train_dataset)
@@ -380,6 +382,7 @@ class _Trainer():
             protocol_path=self.caidbench_protocol,
             index_path=self.caidbench_index_path,
             image_column=self.caidbench_image_column,
+            face_bbox_path=getattr(self, "caidbench_face_bbox_path", None),
         )
 
         self.protocol_stage_ids = list(self.train_dataset.active_stage_ids)

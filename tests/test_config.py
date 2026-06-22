@@ -91,6 +91,35 @@ tracking:
         self.assertEqual(args.load_base_checkpoint, "auto")
         self.assertTrue(args.base_checkpoint_only)
 
+    def test_face_bbox_path_yaml_and_cli_parse(self):
+        base_parser = self._base_parser()
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.yaml"
+            config_path.write_text(
+                """
+data:
+  root: /tmp/CAIDBench
+  face_bbox_path: /tmp/from_yaml.parquet
+tracking:
+  swanlab: false
+""".lstrip(),
+                encoding="utf-8",
+            )
+            argv = [
+                "prog",
+                "--config",
+                str(config_path),
+                "--method",
+                "l2p",
+                "--caidbench_face_bbox_path",
+                "/tmp/from_cli.parquet",
+            ]
+
+            with patch.object(sys, "argv", argv):
+                args = base_parser()
+
+        self.assertEqual(args.caidbench_face_bbox_path, "/tmp/from_cli.parquet")
+
 
 if __name__ == "__main__":
     unittest.main()

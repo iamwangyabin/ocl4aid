@@ -181,6 +181,80 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
         self.assertEqual(target, 1)
         self.assertEqual(binary_target, 1)
 
+    def test_face_bbox_crop_runs_before_transform(self):
+        import pandas as pd
+
+        bbox_path = Path(self.tmp.name) / "face_bboxes.parquet"
+        pd.DataFrame(
+            [
+                {
+                    "arrow_path": "Raw_B/train.arrow",
+                    "batch_id": 0,
+                    "row_in_batch": 0,
+                    "face_found": True,
+                    "x1": 2.0,
+                    "y1": 1.0,
+                    "x2": 6.0,
+                    "y2": 7.0,
+                },
+                {
+                    "arrow_path": "Raw_B/train.arrow",
+                    "batch_id": 0,
+                    "row_in_batch": 1,
+                    "face_found": False,
+                    "x1": 0.0,
+                    "y1": 0.0,
+                    "x2": 4.0,
+                    "y2": 4.0,
+                },
+            ]
+        ).to_parquet(bbox_path, index=False)
+        dataset = CAIDBenchmarkProtocol(
+            root=self.root,
+            train=True,
+            transform=None,
+            protocol_path=self.protocol_path,
+            index_path=self.index_path,
+            face_bbox_path=bbox_path,
+        )
+
+        cropped, _ = dataset[0]
+        fallback, _ = dataset[1]
+
+        self.assertEqual(cropped.size, (4, 6))
+        self.assertEqual(fallback.size, (8, 8))
+
+    def test_default_face_bbox_file_is_loaded_from_dataset_root(self):
+        import pandas as pd
+
+        bbox_path = self.root / "forgerynet_face_bboxes_all_generators.parquet"
+        pd.DataFrame(
+            [
+                {
+                    "arrow_path": "Raw_B/train.arrow",
+                    "batch_id": 0,
+                    "row_in_batch": 0,
+                    "face_found": True,
+                    "x1": 1.0,
+                    "y1": 2.0,
+                    "x2": 7.0,
+                    "y2": 5.0,
+                },
+            ]
+        ).to_parquet(bbox_path, index=False)
+        dataset = CAIDBenchmarkProtocol(
+            root=self.root,
+            train=True,
+            transform=None,
+            protocol_path=self.protocol_path,
+            index_path=self.index_path,
+        )
+
+        cropped, _ = dataset[0]
+
+        self.assertEqual(dataset.face_bbox_path, bbox_path)
+        self.assertEqual(cropped.size, (6, 3))
+
     def test_image_payload_preserves_jpeg_quality_metadata(self):
         image = _image_from_payload({"bytes": _jpeg_bytes((80, 20, 10), quality=70)})
 

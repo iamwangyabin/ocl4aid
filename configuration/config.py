@@ -37,6 +37,7 @@ def _framework_defaults(payload):
         ("data", "protocol"): "caidbench_protocol",
         ("data", "index"): "caidbench_index_path",
         ("data", "image_column"): "caidbench_image_column",
+        ("data", "face_bbox_path"): "caidbench_face_bbox_path",
         ("run", "seeds"): "seeds",
         ("run", "note"): "note",
         ("run", "log_dir"): "log_path",
@@ -141,6 +142,8 @@ def base_parser():
                         help="Optional CAIDBenchmark index parquet override. Defaults to protocol index_path.")
     parser.add_argument("--caidbench_image_column", type=str, default=defaults.get("caidbench_image_column", "image"),
                         help="Image column name in CAIDBenchmark Arrow files.")
+    parser.add_argument("--caidbench_face_bbox_path", type=str, default=defaults.get("caidbench_face_bbox_path"),
+                        help="Optional face bbox parquet. Defaults to forgerynet_face_bboxes_all_generators.parquet in the CAIDBenchmark root when present.")
 
     # =========== Training configuration ===========
     parser.add_argument("--opt_name", type=str, default=defaults.get("opt_name", "sgd"), help="Optimizer name")

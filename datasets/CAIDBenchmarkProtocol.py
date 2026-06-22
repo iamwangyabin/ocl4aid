@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from io import BytesIO
+import math
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from .safe_sample import make_bad_sample
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_PROTOCOL = _REPO_ROOT / "protocol_presets" / "caidbench" / "model_appearance_order_protocol.yaml"
+_DEFAULT_FACE_BBOX_FILENAME = "forgerynet_face_bboxes_all_generators.parquet"
 _REQUIRED_INDEX_COLUMNS = {
     "task_id",
     "generator_name",
@@ -109,6 +111,7 @@ class CAIDBenchmarkProtocol(Dataset):
         protocol_path=None,
         index_path=None,
         image_column="image",
+        face_bbox_path=None,
     ):
         super().__init__()
         del download
@@ -122,10 +125,12 @@ class CAIDBenchmarkProtocol(Dataset):
         self.train = bool(train)
         self.transform = transform
         self.image_column = str(image_column)
+        self.face_bbox_path = _resolve_face_bbox_path(self.root, face_bbox_path)
         self.protocol_path = _resolve_protocol_path(protocol_path)
         protocol = _load_protocol(self.protocol_path)
         self.protocol_tasks = _protocol_tasks(protocol)
         self.index_path = _resolve_index_path(index_path, protocol, self.protocol_path)
+        self._face_bboxes = _load_face_bboxes(self.face_bbox_path) if self.face_bbox_path else {}
 
         index = _load_index(self.index_path)
         self.generator_order = []
@@ -175,6 +180,7 @@ class CAIDBenchmarkProtocol(Dataset):
 
     def __getitem__(self, index):
         image = self._load_image(index)
+        image = self._crop_face_if_available(image, index)
         if self.transform is not None:
             image = self.transform(image)
         return image, self.targets[index]
@@ -238,6 +244,22 @@ class CAIDBenchmarkProtocol(Dataset):
         )
         return _image_from_payload(payload)
 
+    def _crop_face_if_available(self, image: Image.Image, index: int):
+        if not self._face_bboxes:
+            return image
+        key = (self._arrow_paths[index], int(self._batch_ids[index]), int(self._row_in_batch[index]))
+        bbox = self._face_bboxes.get(key)
+        if bbox is None:
+            return image
+        x1, y1, x2, y2 = bbox
+        left = max(0, int(math.floor(x1)))
+        top = max(0, int(math.floor(y1)))
+        right = min(image.width, int(math.ceil(x2)))
+        bottom = min(image.height, int(math.ceil(y2)))
+        if right <= left or bottom <= top:
+            return image
+        return image.crop((left, top, right, bottom))
+
 
 def _load_protocol(path: Path) -> dict[str, Any]:
     import yaml
@@ -284,6 +306,46 @@ def _load_index(path: Path) -> pd.DataFrame:
     index["batch_id"] = index["batch_id"].astype("int64")
     index["row_in_batch"] = index["row_in_batch"].astype("int64")
     return index
+
+
+def _load_face_bboxes(path: Path) -> dict[tuple[str, int, int], tuple[float, float, float, float]]:
+    if not path.is_file():
+        raise FileNotFoundError(f"CAIDBenchmark face bbox parquet does not exist: {path}")
+    frame = pd.read_parquet(path)
+    required = {"arrow_path", "batch_id", "row_in_batch", "face_found", "x1", "y1", "x2", "y2"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise ValueError(f"CAIDBenchmark face bbox parquet is missing columns: {missing}")
+    frame = frame[frame["face_found"].astype(bool)].copy()
+    if frame.empty:
+        return {}
+    frame = frame.dropna(subset=["arrow_path", "batch_id", "row_in_batch", "x1", "y1", "x2", "y2"])
+    bboxes: dict[tuple[str, int, int], tuple[float, float, float, float]] = {}
+    for row in frame.itertuples(index=False):
+        x1, y1, x2, y2 = float(row.x1), float(row.y1), float(row.x2), float(row.y2)
+        if not all(math.isfinite(value) for value in (x1, y1, x2, y2)):
+            continue
+        bboxes[(str(row.arrow_path), int(row.batch_id), int(row.row_in_batch))] = (x1, y1, x2, y2)
+    return bboxes
+
+
+def _resolve_face_bbox_path(root: Path, face_bbox_path) -> Path | None:
+    if face_bbox_path in (None, ""):
+        default_path = root / _DEFAULT_FACE_BBOX_FILENAME
+        return default_path if default_path.is_file() else None
+
+    path = Path(str(face_bbox_path)).expanduser()
+    if path.is_absolute():
+        resolved = path
+    elif (root / path).exists():
+        resolved = (root / path).resolve()
+    elif path.exists():
+        resolved = path.resolve()
+    else:
+        resolved = root / path
+    if not resolved.is_file():
+        raise FileNotFoundError(f"CAIDBenchmark face bbox parquet does not exist: {resolved}")
+    return resolved
 
 
 def _resolve_protocol_path(protocol_path) -> Path:
