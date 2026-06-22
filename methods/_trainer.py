@@ -112,6 +112,8 @@ class _Trainer():
         # Distributed training setup
         self.world_size = 1
         self.ngpus_per_nodes = torch.cuda.device_count()
+        if self.ngpus_per_nodes == 0:
+            self.ngpus_per_nodes = 1
         if "WORLD_SIZE" in os.environ and os.environ["WORLD_SIZE"] != '':
             self.world_size  = int(os.environ["WORLD_SIZE"]) * self.ngpus_per_nodes
         else:
@@ -139,6 +141,13 @@ class _Trainer():
         os.makedirs(self.log_dir, exist_ok=True)
 
         return
+
+    def _resolve_device(self, gpu):
+        if torch.cuda.is_available():
+            return torch.device(f"cuda:{gpu % torch.cuda.device_count()}")
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
 
     def _init_file_logging(self):
         if not self.is_main_process():
@@ -1374,7 +1383,7 @@ class _Trainer():
     def main_worker(self, gpu) -> None:
         # ========= Distributed training setup =========
         self.gpu    = gpu % self.ngpus_per_nodes
-        self.device = torch.device(self.gpu)
+        self.device = self._resolve_device(self.gpu)
         if self.distributed:
             self.local_rank = self.gpu
             if 'SLURM_PROCID' in os.environ.keys():
@@ -1398,8 +1407,9 @@ class _Trainer():
                 random.seed(self.rnd_seed)
                 np.random.seed(self.rnd_seed)
                 torch.manual_seed(self.rnd_seed)
-                torch.cuda.manual_seed(self.rnd_seed)
-                torch.cuda.manual_seed_all(self.rnd_seed) # if use multi-GPU
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed(self.rnd_seed)
+                    torch.cuda.manual_seed_all(self.rnd_seed) # if use multi-GPU
                 cudnn.deterministic = True
                 logger.info(
                     'You have chosen to seed training. '

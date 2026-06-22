@@ -42,6 +42,7 @@ def _framework_defaults(payload):
         ("run", "note"): "note",
         ("run", "log_dir"): "log_path",
         ("model", "backbone"): "backbone",
+        ("model", "pretrained"): "pretrained",
         ("train", "optimizer"): "opt_name",
         ("train", "scheduler"): "sched_name",
         ("train", "amp"): "use_amp",
@@ -130,6 +131,10 @@ def base_parser():
 
     # ============ Model configuration =============
     parser.add_argument("--backbone", type=str, default=defaults.get("backbone", "vit_base_patch16_224"), help="Backbone name")
+    parser.add_argument("--pretrained", action="store_true", default=defaults.get("pretrained", True),
+                        help="Load pretrained backbone weights. Enabled by default.")
+    parser.add_argument("--no_pretrained", dest="pretrained", action="store_false",
+                        help="Disable pretrained backbone weights, useful for local smoke tests.")
 
     # =========== Dataset configuration ============
     parser.add_argument("--caidbench_data_dir", type=str, required=defaults.get("caidbench_data_dir") is None,

@@ -40,6 +40,7 @@ class CodaPrompt(nn.Module):
         super().__init__()
 
         self.kwargs = kwargs
+        pretrained = bool(kwargs.get("pretrained", True))
         self.ortho_mu = ortho_mu
         self.task_num = task_num
         self.num_classes = num_classes
@@ -51,10 +52,10 @@ class CodaPrompt(nn.Module):
         # Use custom ViT model from models.vit to support local .npz loading
         if hasattr(vit, backbone_name):
             logger.info(f'Using custom ViT model: {backbone_name}')
-            self.add_module('backbone', getattr(vit, backbone_name)(pretrained=True, num_classes=num_classes))
+            self.add_module('backbone', getattr(vit, backbone_name)(pretrained=pretrained, num_classes=num_classes))
         else:
             logger.info(f'Using timm model: {backbone_name}')
-            self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
+            self.add_module('backbone', timm.create_model(backbone_name, pretrained=pretrained, num_classes=num_classes))
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
         self.backbone.fc.weight.requires_grad = True

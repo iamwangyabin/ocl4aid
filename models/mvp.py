@@ -37,6 +37,7 @@ class MVP(nn.Module):
 
         self.lambd       = lambd
         self.kwargs      = kwargs
+        pretrained       = bool(kwargs.get("pretrained", True))
         self.task_num    = task_num
         self.use_mask    = use_mask
         self.num_classes = num_classes
@@ -51,10 +52,10 @@ class MVP(nn.Module):
         # Use custom ViT model from models.vit to support local .npz loading
         if hasattr(vit, backbone_name):
             logger.info(f'Using custom ViT model: {backbone_name}')
-            self.add_module('backbone', getattr(vit, backbone_name)(pretrained=True, num_classes=num_classes))
+            self.add_module('backbone', getattr(vit, backbone_name)(pretrained=pretrained, num_classes=num_classes))
         else:
             logger.info(f'Using timm model: {backbone_name}')
-            self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
+            self.add_module('backbone', timm.create_model(backbone_name, pretrained=pretrained, num_classes=num_classes))
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
         self.backbone.fc.weight.requires_grad = True

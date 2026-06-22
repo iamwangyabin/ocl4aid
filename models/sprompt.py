@@ -25,6 +25,7 @@ class SPrompt(nn.Module):
         super().__init__()
 
         self.kwargs = kwargs
+        pretrained = bool(kwargs.get("pretrained", True))
         self.task_num = task_num
         self.num_classes = num_classes
         self.len_prompt = len_prompt
@@ -38,13 +39,13 @@ class SPrompt(nn.Module):
             logger.info(f"Using custom ViT model: {backbone_name}")
             self.add_module(
                 "backbone",
-                getattr(vit, backbone_name)(pretrained=True, num_classes=num_classes),
+                getattr(vit, backbone_name)(pretrained=pretrained, num_classes=num_classes),
             )
         else:
             logger.info(f"Using timm model: {backbone_name}")
             self.add_module(
                 "backbone",
-                timm.create_model(backbone_name, pretrained=True, num_classes=num_classes),
+                timm.create_model(backbone_name, pretrained=pretrained, num_classes=num_classes),
             )
 
         self.embed_dim = self.backbone.num_features
@@ -232,4 +233,3 @@ class SPrompt(nn.Module):
         # Initialize EMA heads for the new expert, if enabled
         if self.use_ema_head and self.experts_fc is not None and self.num_ema > 0:
             self.init_fc(expert_id=self.task_count)
-

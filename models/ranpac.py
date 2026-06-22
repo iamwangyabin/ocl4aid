@@ -61,13 +61,15 @@ class RanPACClassifier(nn.Module):
         self.use_RP = use_RP
         self.M = M
 
-        self.rp_initialized = False
+        self.rp_initialized = bool(self.use_RP and self.M > 0)
 
-        # Initialize with standard linear layer
-        self.fc = nn.Linear(feature_dim, num_classes, bias=False)
-
-        # Random projection matrix (will be initialized after first task)
-        self.register_buffer('W_rand', torch.empty(0))
+        if self.rp_initialized:
+            self.fc = nn.Linear(self.M, num_classes, bias=False)
+            self.register_buffer('W_rand', torch.randn(feature_dim, self.M))
+            logger.info(f"Random projection initialized: {feature_dim} -> {self.M}")
+        else:
+            self.fc = nn.Linear(feature_dim, num_classes, bias=False)
+            self.register_buffer('W_rand', torch.empty(0))
 
         # Statistics matrices for RanPAC
         if self.use_RP and self.M > 0:
@@ -93,6 +95,9 @@ class RanPACClassifier(nn.Module):
         features = features.detach().float()
         labels = labels.detach().to(features.device)
         Y = self.target2onehot(labels, self.num_classes).to(features.device, features.dtype)
+
+        if self.use_RP and self.M > 0 and not self.rp_initialized:
+            self.setup_rp(features.device)
 
         if self.use_RP and self.rp_initialized:
             features_h = F.relu(features @ self.W_rand.to(features.device))
@@ -213,6 +218,7 @@ class RanPAC(nn.Module):
 
         self.M              = ranpac_M
         self.kwargs         = kwargs
+        pretrained          = bool(kwargs.get("pretrained", True))
         self.use_RP         = ranpac_use_RP
         self.task_num       = task_num
         self.num_classes    = num_classes
@@ -228,10 +234,10 @@ class RanPAC(nn.Module):
         # Use custom ViT model from models.vit to support local .npz loading
         if hasattr(vit, backbone_name):
             logger.info(f'Using custom ViT model: {backbone_name}')
-            self.add_module('backbone', getattr(vit, backbone_name)(pretrained=True, num_classes=num_classes))
+            self.add_module('backbone', getattr(vit, backbone_name)(pretrained=pretrained, num_classes=num_classes))
         else:
             logger.info(f'Using timm model: {backbone_name}')
-            self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
+            self.add_module('backbone', timm.create_model(backbone_name, pretrained=pretrained, num_classes=num_classes))
         for name, param in self.backbone.named_parameters():
             param.requires_grad = False
 

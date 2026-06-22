@@ -158,6 +158,7 @@ class SDLoRAModel(nn.Module):
         self.sdlora_layers = sdlora_layers
         self.sdlora_ortho_weight = sdlora_ortho_weight
         self.kwargs = kwargs
+        pretrained = bool(kwargs.get("pretrained", True))
 
         self.task_count = 0
 
@@ -165,10 +166,10 @@ class SDLoRAModel(nn.Module):
         # Use custom ViT model from models.vit to support local .npz loading
         if hasattr(vit, backbone_name):
             logger.info(f"Using custom ViT model: {backbone_name}")
-            self.add_module("backbone", getattr(vit, backbone_name)(pretrained=True, num_classes=num_classes))
+            self.add_module("backbone", getattr(vit, backbone_name)(pretrained=pretrained, num_classes=num_classes))
         else:
             logger.info(f"Using timm model: {backbone_name}")
-            self.add_module("backbone", timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
+            self.add_module("backbone", timm.create_model(backbone_name, pretrained=pretrained, num_classes=num_classes))
 
         # Freeze backbone parameters, keep classifier head trainable
         for _, p in self.backbone.named_parameters():
@@ -231,4 +232,3 @@ class SDLoRAModel(nn.Module):
             self.task_count += 1
         logger.info(f"[SDLoRA] Switched to task {self.task_count}")
         return
-

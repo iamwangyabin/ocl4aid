@@ -81,6 +81,8 @@ def select_scheduler(sched_name, opt, hparam=None):
 def select_model(method, backbone, num_classes=None, n_tasks=None, kwargs=None):
     import logging
     logger = logging.getLogger()
+    kwargs = dict(kwargs or {})
+    pretrained = bool(kwargs.pop("pretrained", True))
 
     if method=="slca":
         import models.vit as vit
@@ -88,17 +90,16 @@ def select_model(method, backbone, num_classes=None, n_tasks=None, kwargs=None):
         if hasattr(vit, backbone):
             logger.info(f'Using custom ViT model: {backbone}')
             model = getattr(vit, backbone)(
-                pretrained=True,
+                pretrained=pretrained,
                 num_classes=num_classes,
                 drop_rate=0.,
                 drop_path_rate=0.,
-                drop_block_rate=None
             )
         else:
             logger.info(f'Using timm model: {backbone}')
             model = timm.create_model(
                 backbone,
-                pretrained=True,
+                pretrained=pretrained,
                 num_classes=num_classes,
                 drop_rate=0.,
                 drop_path_rate=0.,
@@ -107,7 +108,7 @@ def select_model(method, backbone, num_classes=None, n_tasks=None, kwargs=None):
     elif method in MODELS.keys():
         model = MODELS[method](
             backbone_name=backbone,
-            pretrained=True,
+            pretrained=pretrained,
             num_classes=num_classes,
             task_num=n_tasks,
             **kwargs

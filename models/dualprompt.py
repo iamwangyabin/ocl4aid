@@ -66,6 +66,7 @@ class DualPrompt(nn.Module):
 
         self.lambd = lambd
         self.kwargs = kwargs
+        pretrained = bool(kwargs.get("pretrained", True))
         self.task_num = task_num
         self.num_classes = num_classes
 
@@ -101,10 +102,10 @@ class DualPrompt(nn.Module):
         # Use custom ViT model from models.vit to support local .npz loading
         if hasattr(vit, backbone_name):
             logger.info(f'Using custom ViT model: {backbone_name}')
-            self.add_module('backbone', getattr(vit, backbone_name)(pretrained=True, num_classes=num_classes))
+            self.add_module('backbone', getattr(vit, backbone_name)(pretrained=pretrained, num_classes=num_classes))
         else:
             logger.info(f'Using timm model: {backbone_name}')
-            self.add_module('backbone', timm.create_model(backbone_name, pretrained=True, num_classes=num_classes))
+            self.add_module('backbone', timm.create_model(backbone_name, pretrained=pretrained, num_classes=num_classes))
 
         # Optionally override backbone weights with MePo checkpoint (without loading fc/head)
         if self.mepo_backbone_path is not None:
