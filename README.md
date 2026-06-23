@@ -115,9 +115,15 @@ python3 main.py \
 ## Configuration
 
 Common framework settings live in `configs/framework/caidbench.yaml`. Method
-settings live under `configs/methods/`. The loader first reads
-`configs/methods/common.yaml`, then overlays `configs/methods/<method>.yaml`.
-CLI flags still override YAML values.
+settings live under `configs/methods/`. The loader reads the small shared
+fallback file `configs/methods/common.yaml`, then overlays
+`configs/methods/<method>.yaml`.
+
+`configuration/config.py` only declares framework-level CLI flags. Method
+hyperparameters are injected from the method YAML, and can still be overridden
+from the command line with the same key name, for example
+`--len_prompt 10` or `--rine_residual_inner_steps 2`. Do not add a new parser
+entry for every method-specific option.
 
 The default framework optimizer is AdamW with `CosineAnnealingLR`; the default
 learning rate is `0.001` and can be overridden with `--lr`.
@@ -144,6 +150,14 @@ python3 main.py \
   --caidbench_data_dir /path/to/CAIDBench \
   --caidbench_protocol protocol_presets/caidbench/model_appearance_order_protocol.yaml \
   --caidbench_index_path protocol_presets/caidbench/continual_index.parquet
+```
+
+For fast method iteration, use the short base-plus-10-increment protocol:
+
+```bash
+python3 main.py \
+  --caidbench_data_dir /path/to/CAIDBench \
+  --caidbench_protocol protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml
 ```
 
 ## Logging

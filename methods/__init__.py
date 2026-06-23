@@ -10,6 +10,7 @@ from .sdlora import SDLoRAGCL
 from .singleprompt import SinglePromptTrainer
 from .sprompt import SPrompt as SPromptTrainer
 from .rineside_gauss import RineSideGauss
+from .rine_residual import RINEResidual
 
 METHODS = {
     "codaprompt": CodaPrompt,
@@ -27,4 +28,5 @@ METHODS = {
     "singleprompt": SinglePromptTrainer,
     "sprompt": SPromptTrainer,
     "rineside_gauss": RineSideGauss,
+    "rine_residual": RINEResidual,
 }

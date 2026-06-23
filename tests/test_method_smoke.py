@@ -27,6 +27,7 @@ METHODS = [
     "sdlora",
     "mvp",
     "rineside_gauss",
+    "rine_residual",
 ]
 
 

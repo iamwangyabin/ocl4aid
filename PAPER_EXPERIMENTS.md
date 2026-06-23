@@ -65,6 +65,38 @@ Generator stages define the stream and evaluation slices only. Dataset indices,
 generator names, protocol stage IDs, and benchmark task IDs must not be passed
 into `online_step`.
 
+## VirtAI Runtime Notes
+
+For the VirtAI SSH job environment, use the mounted project directories rather
+than `/root` for persistent files:
+
+```text
+code:      /gemini/code        ($GEMINI_CODE)
+data:      /gemini/data-1      ($GEMINI_DATA_IN1)
+data:      /gemini/data-2      ($GEMINI_DATA_IN2)
+data:      /gemini/data-3      ($GEMINI_DATA_IN3)
+pretrain:  /gemini/pretrain    ($GEMINI_PRETRAIN)
+pretrain2: /gemini/pretrain2   ($GEMINI_PRETRAIN2)
+pretrain3: /gemini/pretrain3   ($GEMINI_PRETRAIN3)
+output:    /gemini/output      ($GEMINI_DATA_OUT, offline training)
+```
+
+Place this repository under `/gemini/code/ocl4aid`. Container-local paths such
+as `/root` are writable but temporary and may be lost when the container is
+restarted. Read datasets from `/gemini/data-*` and pretrained weights from
+`/gemini/pretrain*`.
+
+One checked VirtAI job exposes eight RTX 3090 devices through
+`/proc/driver/nvidia/gpus/*/information`, although `nvidia-smi` may print
+`SMI N/A`/`Driver Version: N/A` in the SSH shell. Before launching training,
+verify CUDA from Python after installing PyTorch:
+
+```python
+import torch
+print(torch.cuda.is_available())
+print(torch.cuda.device_count())
+```
+
 ## Stream Settings
 
 The main benchmark should be the blurry stream. The hard stream is a control

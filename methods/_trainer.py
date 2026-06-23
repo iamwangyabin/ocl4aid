@@ -551,6 +551,12 @@ class _Trainer():
             return 0.0 if metric_name in {"accuracy", "f1"} else None
         return sum(values) / len(values)
 
+    def _valid_metric_average(self, values, metric_name="accuracy"):
+        valid = [float(value) for value in values if value is not None]
+        if not valid:
+            return 0.0 if metric_name in {"accuracy", "f1"} else None
+        return sum(valid) / len(valid)
+
     def _protocol_metric_payload(self, stage_metric: StageMetrics):
         return {
             "stage_id": stage_metric.stage_id,
@@ -988,8 +994,53 @@ class _Trainer():
             )
             stage_metrics.append(stage_metric)
             self._log_protocol_eval(stage_metric, stage_name)
+            self._log_protocol_train_eval(stage_id, stage_name)
         if self.distributed:
             dist.barrier()
+
+    def _log_protocol_train_eval(self, stage_id, stage_name):
+        seen_generators = [
+            entry["generator_name"]
+            for entry in self.protocol_generator_order[: stage_id + 1]
+        ]
+        train_scores = {}
+        max_train_eval_samples = int(
+            getattr(self, "protocol_train_eval_max_samples", 5000) or 0
+        )
+        for seen_stage_id, generator_name in enumerate(seen_generators):
+            indices = self.train_dataset.stage_indices.get(seen_stage_id, [])
+            if not indices:
+                continue
+            if max_train_eval_samples > 0 and len(indices) > max_train_eval_samples:
+                stride = max(1, len(indices) // max_train_eval_samples)
+                indices = indices[::stride][:max_train_eval_samples]
+            train_scores[generator_name] = self._evaluate_protocol_slice_on_dataset(
+                self.train_dataset,
+                indices,
+                normalize_loaded_tensors=True,
+            )
+        if not train_scores:
+            return
+        avg_scores = {
+            metric_name: self._valid_metric_average(
+                [scores.get(metric_name) for scores in train_scores.values()],
+                metric_name,
+            )
+            for metric_name in DETECTION_METRICS
+        }
+        current_scores = train_scores.get(stage_name, {})
+        logger.info(
+            "Protocol Train Eval | stage %s | avg acc %s | f1 %s | ap %s | auc %s | current acc %s | f1 %s | ap %s | auc %s",
+            stage_id,
+            self._format_metric_value(avg_scores["accuracy"]),
+            self._format_metric_value(avg_scores["f1"]),
+            self._format_metric_value(avg_scores["ap"]),
+            self._format_metric_value(avg_scores["auc"]),
+            self._format_metric_value(current_scores.get("accuracy")),
+            self._format_metric_value(current_scores.get("f1")),
+            self._format_metric_value(current_scores.get("ap")),
+            self._format_metric_value(current_scores.get("auc")),
+        )
 
     def _ensure_current_base_matrix_eval(self, stage_metrics):
         base_stage_id = self._base_stage_id()
@@ -1280,7 +1331,20 @@ class _Trainer():
                 self.model_without_ddp.update()
 
     def _evaluate_protocol_slice(self, indices):
-        subset = self.test_dataset.make_eval_subset(indices)
+        return self._evaluate_protocol_slice_on_dataset(
+            self.test_dataset,
+            indices,
+            normalize_loaded_tensors=False,
+        )
+
+    def _evaluate_protocol_slice_on_dataset(
+        self,
+        dataset,
+        indices,
+        *,
+        normalize_loaded_tensors: bool = False,
+    ):
+        subset = dataset.make_eval_subset(indices)
         loader = DataLoader(
             subset,
             batch_size=self.batchsize * 2,
@@ -1297,6 +1361,8 @@ class _Trainer():
                     logger.warning("Skipping empty protocol eval batch after dropping unreadable samples.")
                     continue
                 images, _targets, binary_targets = batch
+                if normalize_loaded_tensors:
+                    images = self.test_transform_tensor(images)
                 images = images.to(self.device)
                 logits = self._protocol_eval_logits(images)
                 pred_indices = torch.argmax(logits, dim=-1).detach().cpu().tolist()
@@ -1372,7 +1438,17 @@ class _Trainer():
             logits = result[0] if isinstance(result, tuple) else result
             return logits + self.mask
 
-        if self.method in {"l2p", "dualprompt", "mvp", "ranpac", "singleprompt", "slca", "sdlora", "rineside_gauss"}:
+        if self.method in {
+            "l2p",
+            "dualprompt",
+            "mvp",
+            "ranpac",
+            "singleprompt",
+            "slca",
+            "sdlora",
+            "rineside_gauss",
+            "rine_residual",
+        }:
             return self.model(images) + self.mask
 
         raise NotImplementedError(
