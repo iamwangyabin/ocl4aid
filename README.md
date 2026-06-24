@@ -82,9 +82,9 @@ Precompute and save the base stage:
 
 ```bash
 python3 main.py \
-  --config configs/framework/caidbench.yaml \
+  --config configs/framework/caidbench_50_hard.yaml \
   --method flyprompt \
-  --base_stage_epochs 10 \
+  --caidbench_data_dir /path/to/CAIDBench \
   --save_base_checkpoint \
   --base_checkpoint_only \
   --no_swanlab
@@ -103,12 +103,10 @@ Reuse it in an online run:
 
 ```bash
 python3 main.py \
-  --config configs/framework/caidbench.yaml \
+  --config configs/framework/caidbench_50_mainblurry.yaml \
   --method flyprompt \
-  --base_stage_epochs 10 \
+  --caidbench_data_dir /path/to/CAIDBench \
   --load_base_checkpoint auto \
-  --stage_blurry_n 50 \
-  --stage_blurry_m 20 \
   --no_swanlab
 ```
 
@@ -118,6 +116,26 @@ Common framework settings live in `configs/framework/caidbench.yaml`. Method
 settings live under `configs/methods/`. The loader reads the small shared
 fallback file `configs/methods/common.yaml`, then overlays
 `configs/methods/<method>.yaml`.
+
+Checked-in framework presets cover the current paper and diagnostic launch
+settings, so protocol, base-stage, stream-blur, batch, evaluation, and tracking
+defaults do not need to be repeated on the command line:
+
+```text
+configs/framework/caidbench_50_hard.yaml
+configs/framework/caidbench_50_mainblurry.yaml
+configs/framework/caidbench_aigc10_mainblurry.yaml
+configs/framework/caidbench_aigc10_mainblurry_fastbase.yaml
+configs/framework/caidbench_10inc_mainblurry.yaml
+configs/framework/caidbench_10inc_mainblurry_fastbase.yaml
+```
+
+The AIGC10 presets are the preferred short-horizon diagnostic setting: ProGAN
+is the supervised base stage, followed by 10 modern AIGC-era generators in CAID
+appearance order. The older CAID-10inc presets are retained for reproducing
+existing mixed classic/recent short-protocol runs. The AIGC10 and CAID-10inc
+presets include per-method experiment overrides currently used for
+`codaprompt`, `dualprompt`, and `ranpac`.
 
 `configuration/config.py` only declares framework-level CLI flags. Method
 hyperparameters are injected from the method YAML, and can still be overridden
@@ -138,8 +156,9 @@ in the method YAML.
 
 ```bash
 python3 main.py \
-  --config configs/framework/caidbench.yaml \
+  --config configs/framework/caidbench_50_hard.yaml \
   --method flyprompt \
+  --caidbench_data_dir /path/to/CAIDBench \
   --no_swanlab
 ```
 
@@ -152,12 +171,15 @@ python3 main.py \
   --caidbench_index_path protocol_presets/caidbench/continual_index.parquet
 ```
 
-For fast method iteration, use the short base-plus-10-increment protocol:
+For fast method iteration, use the short ProGAN-plus-AIGC10 protocol:
 
 ```bash
 python3 main.py \
+  --config configs/framework/caidbench_aigc10_mainblurry_fastbase.yaml \
+  --method flyprompt \
   --caidbench_data_dir /path/to/CAIDBench \
-  --caidbench_protocol protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml
+  --log_path run_logs \
+  --no_swanlab
 ```
 
 ## Logging
@@ -166,8 +188,9 @@ SwanLab is enabled by default. Disable it with `--no_swanlab`, or configure:
 
 ```bash
 python3 main.py \
+  --config configs/framework/caidbench_aigc10_mainblurry.yaml \
+  --method flyprompt \
   --caidbench_data_dir /path/to/CAIDBench \
-  --swanlab_project ocl4aid \
   --swanlab_workspace your_workspace
 ```
 

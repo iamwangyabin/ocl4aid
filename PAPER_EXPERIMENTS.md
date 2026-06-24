@@ -34,34 +34,44 @@ protocol_presets/caidbench/model_appearance_order_protocol_50.yaml
 each generator to have a balanced test split of 2000 images: 1000 real and 1000
 fake. This keeps final sample-level and generator-level test summaries aligned.
 
-The short-horizon protocol is `CAID-10inc`, defined by:
+The preferred short-horizon protocol is `CAID-AIGC10`, defined by:
 
 ```text
-protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml
+protocol_presets/caidbench/model_appearance_order_protocol_aigc10.yaml
 ```
 
-`CAID-10inc` is a faster diagnostic setting with one supervised base generator
-and 10 online incremental generator stages. It should use the same common
-training setup as `CAID-50`, including `base_stage_epochs=10`, backbone,
-optimizer, batch size, online update budget, and evaluation interval. Use it to
-debug method behavior and to provide a compact short-horizon comparison; do not
-mix `CAID-10inc` numbers with the main `CAID-50` table.
+`CAID-AIGC10` is a faster diagnostic setting with one supervised ProGAN base
+stage and 10 modern AIGC-era online generator stages. The 10 online stages are
+kept in the CAID model-appearance order: SD1.5, Midjourney v5, SDXL-base,
+DALL-E 3, Midjourney v6, Imagen 3.0, FLUX.1, SD3.5, GPT-Image-1, and
+Qwen-Image. It should use the same common training setup as `CAID-50`,
+including `base_stage_epochs=10`, backbone, optimizer, batch size, online
+update budget, and evaluation interval. Use it to debug method behavior and to
+provide a compact short-horizon comparison; do not mix `CAID-AIGC10` numbers
+with the main `CAID-50` table. The older `CAID-10inc` protocol is retained only
+for reproducing existing mixed classic/recent short-protocol runs.
 
 Use the checked-in framework presets instead of repeating protocol/stream
 arguments on every launch:
 
 ```text
+configs/framework/caidbench_50_hard.yaml
+configs/framework/caidbench_50_mainblurry.yaml
+configs/framework/caidbench_aigc10_mainblurry.yaml
+configs/framework/caidbench_aigc10_mainblurry_fastbase.yaml
 configs/framework/caidbench_10inc_mainblurry.yaml
 configs/framework/caidbench_10inc_mainblurry_fastbase.yaml
 ```
 
-The first preset is the formal CAID-10inc main-blurry setup with
-`base_stage_epochs=10`. The second is the fast diagnostic setup used for recent
-server checks: `base_stage_epochs=2`, saved base checkpoints, no AutoAugment,
-no batch mask, `stage_blurry_n=50`, and `stage_blurry_m=20`.
-Both presets also carry per-method experiment overrides for the command-line
-settings used in current CAID-10inc runs: `codaprompt.e_pool=110`,
-DualPrompt's larger prompt layout and `lr=0.005`, and `ranpac.ranpac_M=4096`.
+The CAID-50 presets are the long-horizon hard-boundary control and main-blurry
+paper settings. The first CAID-AIGC10 preset is the formal short-horizon
+main-blurry setup with `base_stage_epochs=10`. The fastbase preset is the fast
+diagnostic setup used for recent server checks: `base_stage_epochs=2`, saved
+base checkpoints, no AutoAugment, no batch mask, `stage_blurry_n=50`, and
+`stage_blurry_m=20`. The AIGC10 and legacy CAID-10inc presets also carry
+per-method experiment overrides for the command-line settings used in current
+short-horizon runs: `codaprompt.e_pool=110`, DualPrompt's larger prompt layout
+and `lr=0.005`, and `ranpac.ranpac_M=4096`.
 
 The base stage checkpoint can be saved once per method/seed and reused across
 stream settings. Use `--save_base_checkpoint --base_checkpoint_only` to
@@ -241,19 +251,19 @@ y-axis: average accuracy / f1 / ap / auc
 
 The main figure can show accuracy and AUC. F1 and AP can go to the appendix.
 
-### 5. Short-Horizon 10-Increment Comparison
+### 5. Short-Horizon AIGC10 Comparison
 
-Run the same core methods on `CAID-10inc`:
+Run the same core methods on `CAID-AIGC10`:
 
 ```text
-protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml
+protocol_presets/caidbench/model_appearance_order_protocol_aigc10.yaml
 ```
 
-This setting has one supervised base generator and 10 online incremental
-generators. It is mainly for rapid method debugging, ablation checks, and a
-compact short-horizon result table. Keep the same common setup and stream
-setting as the corresponding `CAID-50` experiment. For example, the short main
-blurry run should still use:
+This setting has one supervised ProGAN base generator and 10 modern AIGC-era
+online incremental generators in CAID model-appearance order. It is mainly for
+rapid method debugging, ablation checks, and a compact short-horizon result
+table. Keep the same common setup and stream setting as the corresponding
+`CAID-50` experiment. For example, the short main blurry run should still use:
 
 ```text
 base_stage_epochs = 10
@@ -361,9 +371,9 @@ limited, fill this table with core methods only.
 | RanPAC |  |  |  |  |  |  |  |  |
 | Ours |  |  |  |  |  |  |  |  |
 
-### Table 4. Short-Horizon CAID-10inc Results
+### Table 4. Short-Horizon CAID-AIGC10 Results
 
-Protocol: `CAID-10inc`; stream should match the corresponding CAID-50 setting,
+Protocol: `CAID-AIGC10`; stream should match the corresponding CAID-50 setting,
 usually main blurry.
 
 | Method | Final Avg Acc ↑ | Final Avg AUC ↑ | Final Avg AP ↑ | Final Avg F1 ↑ | AUC Forgetting ↓ | AUC Plasticity ↑ |
@@ -387,7 +397,7 @@ Use CAID-50 main blurry unless stated otherwise.
 | w/o base checkpoint |  |  |  |  |  |  |
 | w/o online calibration |  |  |  |  |  |  |
 | hard stream only |  |  |  |  |  |  |
-| 10inc short protocol |  |  |  |  |  |  |
+| AIGC10 short protocol |  |  |  |  |  |  |
 
 ### Appendix Table A1. Final Per-Generator Results
 
@@ -604,7 +614,7 @@ stage_blurry_n = 100
 stage_blurry_m = 0
 ```
 
-### CAID-10inc DualPrompt Big-Prompt Diagnostic
+### Legacy CAID-10inc DualPrompt Big-Prompt Diagnostic
 
 Launched on `A6000` on 2026-06-23 CST. This is an exploratory rescue run for
 DualPrompt base-stage underfitting on the short `CAID-10inc` main-blurry
@@ -795,9 +805,9 @@ Precompute reusable base:
 
 ```bash
 python3 main.py \
-  --config configs/framework/caidbench.yaml \
+  --config configs/framework/caidbench_50_hard.yaml \
   --method flyprompt \
-  --base_stage_epochs 10 \
+  --caidbench_data_dir /path/to/CAIDBench \
   --save_base_checkpoint \
   --base_checkpoint_only \
   --no_swanlab
@@ -807,12 +817,10 @@ Main blurry:
 
 ```bash
 python3 main.py \
-  --config configs/framework/caidbench.yaml \
+  --config configs/framework/caidbench_50_mainblurry.yaml \
   --method flyprompt \
-  --base_stage_epochs 10 \
+  --caidbench_data_dir /path/to/CAIDBench \
   --load_base_checkpoint auto \
-  --stage_blurry_n 50 \
-  --stage_blurry_m 20 \
   --note flyprompt_base10_blurry10 \
   --no_swanlab
 ```
@@ -821,12 +829,10 @@ Hard control:
 
 ```bash
 python3 main.py \
-  --config configs/framework/caidbench.yaml \
+  --config configs/framework/caidbench_50_hard.yaml \
   --method flyprompt \
-  --base_stage_epochs 10 \
+  --caidbench_data_dir /path/to/CAIDBench \
   --load_base_checkpoint auto \
-  --stage_blurry_n 100 \
-  --stage_blurry_m 0 \
   --note flyprompt_base10_hard \
   --no_swanlab
 ```
@@ -835,13 +841,42 @@ Final paper seeds:
 
 ```bash
 python3 main.py \
-  --config configs/framework/caidbench.yaml \
+  --config configs/framework/caidbench_50_mainblurry.yaml \
   --method flyprompt \
+  --caidbench_data_dir /path/to/CAIDBench \
   --seeds 1 2 3 4 5 \
-  --base_stage_epochs 10 \
   --load_base_checkpoint auto \
-  --stage_blurry_n 50 \
-  --stage_blurry_m 20 \
   --note flyprompt_base10_blurry10_s5 \
   --no_swanlab
+```
+
+VirtAI CAID-AIGC10 cloud launch template:
+
+```bash
+cd /gemini/code/ocl4aid
+export SWANLAB_API_KEY="<redacted>"
+ls -lh checkpoints/ViT-B_16.npz
+nvidia-smi
+
+python main.py \
+  --config configs/framework/caidbench_aigc10_mainblurry.yaml \
+  --method flyprompt \
+  --caidbench_data_dir /gemini/data-1/CAIDBench \
+  --log_path /gemini/output/ocl4aid_logs \
+  --swanlab \
+  --swanlab_experiment_name caid-aigc10-flyprompt-s1 \
+  --note caid_aigc10_flyprompt_s1
+```
+
+For fast diagnostic reruns, switch only the framework preset:
+
+```bash
+python main.py \
+  --config configs/framework/caidbench_aigc10_mainblurry_fastbase.yaml \
+  --method dualprompt \
+  --caidbench_data_dir /gemini/data-1/CAIDBench \
+  --log_path /gemini/output/ocl4aid_logs \
+  --swanlab \
+  --swanlab_experiment_name caid-aigc10-dualprompt-s1 \
+  --note caid_aigc10_dualprompt_s1
 ```
