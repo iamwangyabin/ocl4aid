@@ -209,6 +209,10 @@ class SPrompt(_Trainer):
 
     def online_after_task(self, task_id):
         del task_id
+        use_rp_gate = getattr(self.model_without_ddp, "use_rp_gate", False)
+        if (not use_rp_gate) and len(self._cur_task_features) > 0:
+            self._build_prototypes_for_task(self.task_id)
+
         # advance model task counter and clear feature buffer for this task
         if self.task_id + 1 < getattr(self, "n_tasks", 1):
             self._advance_model_task_count()

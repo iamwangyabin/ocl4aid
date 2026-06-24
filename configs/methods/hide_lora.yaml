@@ -5,3 +5,6 @@ sdlora_alpha: 0.8
 lam_orth: 1
 ca_num_per_class: 200
 ca_steps: 200
+use_rp_gate: true
+rp_dim: 10000
+rp_ridge: 10000

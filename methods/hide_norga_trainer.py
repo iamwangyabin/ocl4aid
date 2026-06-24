@@ -149,6 +149,12 @@ class _BaseHiDeNoRGaTrainer(_Trainer):
                 task_hat = torch.argmax(logit_task, dim=-1)
             return task_hat
 
+        if int(getattr(self, "n_classes", 0) or 0) <= 2:
+            raise RuntimeError(
+                "HiDe/NoRGa class-to-task fallback is invalid for binary CAID labels; "
+                "enable use_rp_gate so generator-stage experts are routed by a learned task router."
+            )
+
         # Fallback: original gate-branch class prediction + class→task mapping
         with torch.no_grad():
             logit_g, _ = self.model_without_ddp.forward_gate(x, detach_backbone=True)

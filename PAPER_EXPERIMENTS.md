@@ -404,13 +404,177 @@ Compute these from the full protocol matrix.
 
 Last updated: 2026-06-20 CST.
 
-Remote runs should use a single seed by default. Multi-seed runs are reserved
-for final paper tables after the method and stream setting are selected. The
-current remote run explicitly overrides the framework YAML defaults so that the
-paper common setup is used:
+### CAID-10inc Result Audit
+
+Last consolidated on 2026-06-24 CST. The local source of truth is
+`outputs/caid10inc_results/summary.tsv`, with the full archived bundle at
+`outputs/caid10inc_results.tar.gz`.
+
+Complete CAID-10inc main-blurry runs currently available for a fair main table:
+
+| Method | Archived run | Notes |
+| --- | --- | --- |
+| FlyPrompt | `flyprompt_s1` | Complete final-stage result. |
+| L2P | `l2p_s1` | Complete final-stage result. |
+| DualPrompt | `dualprompt_bigprompt_s1` | Tuned prompt capacity; complete final-stage result. |
+| CodaPrompt | `codaprompt_s1` | Complete final-stage result. |
+| RanPAC | `ranpac_m4096_s1` | Complete final-stage result copied from `4090-2`; random projection dimension 4096. |
+| SD-LoRA | `sdlora_s1` | Complete final-stage result. |
+| RINE-Residual | `rine_residual_base_s1` | Non-oracle result; currently the only RINE row suitable for a main table. |
+
+CAID-10inc rows still missing from the full template:
+
+| Method | Status |
+| --- | --- |
+| MVP | No complete archived `seed_1_ocl_metrics.json` result. |
+| SLCA | Current `slca_s1` run is invalid: AP/AUC/F1 matrices are unchanged across all protocol stages, training loss stays near 0.693, and the code path is a plain full-ViT trainer rather than a real SLCA/classifier-alignment implementation. The result has been moved to `outputs/caid10inc_invalid_results/slca_s1`. |
+| SPrompt | Previously summarized, but the source `seed_1_ocl_metrics.json` is not currently present in `outputs/caid10inc_results/`; recover the raw result before using it in source-of-truth tables or curves. |
+| SinglePrompt | The available `caid10inc_singleprompt_s1(1).tgz` contains only logs/SwanLab files and no final metrics JSON. |
+| NoRGa | No complete archived `seed_1_ocl_metrics.json` result. |
+| HiDe | Existing `hide_s1` result used the original class-to-task fallback, which is invalid for binary CAID labels. Rerun after enabling the learned RPFC generator-stage router. |
+| HiDe-LoRA | Existing `hide_lora_s1` result used the original class-to-task fallback, which is invalid for binary CAID labels. Rerun after enabling the learned RPFC generator-stage router. |
+| HiDe-Adapter | Existing `hide_adapter_s1` result used the original class-to-task fallback, which is invalid for binary CAID labels. Rerun after enabling the learned RPFC generator-stage router. |
+
+Rows with `rine_taskoracle_*` or task-oracle-like routing are diagnostic only.
+They must not be used as main paper results because the evaluation route uses
+protocol-stage information that is unavailable in a task-agnostic deployment.
+These diagnostic RINE directories have been removed from the local
+`outputs/caid10inc_results/` archive; keep only `rine_residual_base_s1` there.
+
+Larger paper tables remain missing: all CAID-50 main-blurry results, all
+CAID-50 hard-control results, blurry-strength ablations, proposed-method
+ablations, and multi-seed mean/std runs. Current 10inc numbers are single-seed
+exploratory results.
+
+### RINE 10inc Status
+
+Last checked on `4090-2` on 2026-06-24. Task-oracle routing is not an
+acceptable protocol assumption for paper results: it uses the evaluation slice's
+protocol stage to select the expert head. RINE code now removes `task_oracle`
+and all `task_oracle_*` eval modes; valid runs must use task-agnostic head
+selection or aggregation. Current RINE-Residual code keeps only the baseline
+non-oracle eval modes `max_fake` and `max_confidence`. The exploratory
+`calibrated_mean`, `shared_online`, `base + residual`, prototype, memory-kNN,
+and online-router code paths were removed after negative checks.
+
+Invalidated task-oracle diagnostics found under `/home/yabin/ocl4aid/run_logs/`:
+
+| Run | Protocol stage | Final avg AP | Final avg AUC | Notes |
+| --- | ---: | ---: | ---: | --- |
+| `caid10inc_rine_residual_independent_taskoracle_linearhead_augbase100k_balprior_s1` | 10 | 0.8278 | 0.8295 | Invalid as a main result because expert selection uses protocol stage ID at evaluation. |
+| `caid10inc_rine_residual_independent_taskoracle_augbase100k_lr3e4_step1_fd01_s1_20260623` | 10 | 0.8258 | 0.8270 | Invalid as a main result; useful only as a diagnostic that lower LR helps BigGAN but hurts SD1.5/SDXL. |
+| `caid10inc_rine_residual_independent_baseinit_augbase100k_balprior_s1_20260623` | 10 | 0.8181 | 0.8246 | Invalid as a main result if run with task-oracle routing. |
+| `caid10inc_rine_residual_independent_baseinit_taskoracle_rank16_step2_loadbase_s1_20260623` | 10 | 0.7853 | 0.7933 | Invalid as a main result. |
+| `caid10inc_rine_residual_taskoracle_linearhead_degrade_j05_ds05_blur03_s1_20260623` | 10 | 0.7781 | 0.7864 | Invalid as a main result. |
+| `caid10inc_rine_residual_independent_taskoracle_linearhead_step2_s1_20260623` | 10 | 0.7727 | 0.7780 | Invalid as a main result. |
+
+Rows using reusable base checkpoints should be treated as fast direction checks,
+not final paper numbers. Current rescue runs load the augmented 100k 10inc base
+checkpoint and use strict `n=100,m=0` online exposure.
+
+Additional audit on `4090-2` confirms the 10inc stream itself is balanced and
+does not explain the RINE collapse. The training split has balanced real/fake
+labels in every online stage: ProGAN `360059/360059`, DeepFakes `5000/5000`,
+BigGAN `1506/1506`, StyleGAN2/DDIM/LDM `10000/10000`, and SD1.5/Midjourney
+v5/SDXL-base/FLUX.1/GPT-Image-1 `5000/5000`. Every test generator slice is
+also `1000/1000`. The stream sampler interleaves labels within each stage, so
+there is no one-class online exposure causing the head collapse.
+
+The main negative finding is stronger: even invalid task-oracle diagnostics are
+not close to 0.9 final avg AP, and the same generators stay weak when the
+correct expert is selected. For example, the strongest invalid task-oracle
+linear-head run reaches only final avg AP `0.8278`; its final StyleGAN2 AP is
+`0.4837`, DeepFakes AP `0.6709`, SD1.5 AP `0.6534`, and SDXL-base AP `0.7219`.
+This means head routing/aggregation alone is not a credible path to 0.9 unless
+the per-generator online heads themselves become much stronger.
+
+Exploratory aggregation branches were checked only as single-seed diagnostics
+and then deleted from the codebase. None of those branches read dataset indices,
+generator names, protocol stage IDs, or evaluation labels during training;
+`online_step` remained image + binary-label only.
+
+No valid 10inc final result is currently close to 0.9 AP. The strongest
+complete 10inc result that does not use task-oracle routing is
+`caid10inc_rine_residual_base1_s1_20260623` with final avg AP 0.6198. The best
+valid partial RINE direction so far is still only an early-stage diagnostic:
+`max_fake` reaches avg AP 0.8234 at stage 2, then falls to 0.6623 at stage 3.
+
+An `online_router` single-seed 10inc validation run was launched and stopped on
+`4090-2` on 2026-06-24 because it underperformed at the known StyleGAN2
+collapse point:
 
 ```text
-base_stage_epochs = 10
+run = caid10inc_rine_residual_onlinerouter_augbase100k_balprior_s1_20260624
+eval_mode = online_router
+stage 1 avg AP = 0.8212
+stage 2 avg AP = 0.7930
+stage 3 matrix avg AP = 0.6515
+stage 3 StyleGAN2 AP = 0.4771
+verdict = valid but negative; online-router code removed from current path
+```
+
+The best deleted non-oracle aggregation diagnostic was:
+
+```text
+run = caid10inc_rine_residual_calibmean_addbase_v2_augbase100k_balprior_s1_20260624
+eval_mode = calibrated_mean
+add_base = true
+residual_scale = 0.2
+stage 2 matrix avg AP = 0.8409
+stage 3 matrix avg AP = 0.7581
+stage 3 StyleGAN2 AP = 0.5537
+stage 10 matrix avg AP = 0.6691
+stage 10 matrix avg AUC = 0.6766
+weak final slices = DeepFakes 0.5531 AP, StyleGAN2 0.5083 AP, SD1.5 0.4735 AP, SDXL-base 0.5601 AP, FLUX.1 0.5413 AP, GPT-Image-1 0.5731 AP
+verdict = valid, improves early/mid-stage stability, but not a 0.9 final-AP route
+```
+
+Deleted shared online binary-head diagnostics:
+
+```text
+run = caid10inc_rine_residual_sharedonline_replay10k_augbase100k_balprior_s1_20260624
+eval_mode = shared_online
+head = random linear
+replay = 10k online feature replay, replay batch 128
+add_base = true
+stage 3 matrix avg AP = 0.7418
+stage 3 StyleGAN2 AP = 0.5487
+stage 5 stream avg AP = 0.7544
+verdict = valid but weaker than calibrated_mean+add_base; stopped early
+```
+
+```text
+run = caid10inc_rine_residual_sharedonline_lowrankinit_basereplay5k_replay20k_s1_20260624
+eval_mode = shared_online
+head = lowrank initialized from base head
+replay = 5k base-stage train feature seed + 20k online feature replay
+add_base = false
+stage 1 matrix avg AP = 0.4723
+stage 1 ProGAN AP = 0.3072, AUC = 0.0044
+verdict = valid but failed immediately; stopped early
+```
+
+Negative aggregation checks:
+
+| Run | Last checked stage | Avg AP | Baseline at same stage | Notes |
+| --- | ---: | ---: | ---: | --- |
+| `caid10inc_rine_residual_maxfake_augbase100k_balprior_s1_20260623` | 3 | 0.6623 | n/a | Valid `max_fake`; stage 2 reached 0.8234, but StyleGAN2 current AP fell to 0.4831 at stage 3. |
+| `caid10inc_rine_residual_maxconf_augbase100k_balprior_s1_20260623` | 3 | 0.6634 | 0.6623 | Valid `max_confidence`; stage 1 improved to 0.8129 but stage 3 still collapsed. |
+| `caid10inc_rine_residual_protorouter_augbase100k_balprior_s1_20260623b` | 3 | 0.7166 | n/a | Pure feature-prototype router; task-agnostic, but DeepFakes and stage-3 average AP dropped. |
+| `caid10inc_rine_residual_protodet_augbase100k_balprior_s1_20260623` | 2 | 0.6411 | 0.8234 | Direct binary prototype detector; stage 1 AP 0.7200 and stage 2 AP 0.6411, stopped early. |
+| `caid10inc_rine_residual_memoryknn20k_k50_augbase100k_balprior_s1_20260623` | 1 | 0.7150 | 0.7924 | Online binary feature-memory kNN; DeepFakes current AP 0.4317, stopped early. |
+| `caid10inc_rineside_gauss_stats100k_logmeanexp_s1_20260623` | 3 | 0.6899 | 0.6623 | Pure online Gaussian/prototypical stats with 100k base samples; valid but still weak, StyleGAN2 AP 0.5697. |
+| `caid10inc_rine_residual_independent_calibmax_augbase100k_balprior_s1_20260623` | 3 | 0.6629 | n/a | Centered `calibrated_max`; task-agnostic, stopped early because it was clearly weak. |
+| `caid10inc_rine_residual_independent_centeredmax_rank16_step2_loadbase_s1_20260623` | 2 | 0.7167 | 0.7300 | Centered `calibrated_max` under the older reusable-base setup; stopped early. |
+| `caid10inc_rine_residual_independent_calibmax_rank16_step2_loadbase_s1_20260623` | 4 | about 0.62 | 0.7313 | Quality-weighted calibrated max; stopped early. |
+
+Remote runs should use a single seed by default. Multi-seed runs are reserved
+for final paper tables after the method and stream setting are selected. Current
+RINE rescue runs explicitly override the framework YAML defaults:
+
+```text
+base_stage_epochs = 2
+load_base_checkpoint = run_logs/base_checkpoints_aug/base_rine_residual_vit_base_patch16_224_model_appearance_order_protocol_10inc_seed1_stage0_epochs2.pt
 backbone = vit_base_patch16_224
 optimizer = adamw
 scheduler = cosine
@@ -419,8 +583,100 @@ online_iter = 1
 batchsize = 16
 eval_interval = 20000
 seeds = 1
-methods = flyprompt, l2p, dualprompt, codaprompt, mvp, ranpac
-base_checkpoint_args = --save_base_checkpoint --base_checkpoint_dir <machine>/run_logs/base_checkpoints
+method = rine_residual
+stage_blurry_n = 100
+stage_blurry_m = 0
+```
+
+### CAID-10inc DualPrompt Big-Prompt Diagnostic
+
+Launched on `A6000` on 2026-06-23 CST. This is an exploratory rescue run for
+DualPrompt base-stage underfitting on the short `CAID-10inc` main-blurry
+protocol. It is not part of the common paper setup because it uses a different
+base-stage budget, larger prompt capacity, no AutoAugment, and a higher
+learning rate.
+
+Run identity:
+
+```text
+method = dualprompt
+protocol = protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml
+stream = main blurry, n=50, m=20, leakage=10%
+seed = 1
+machine = A6000
+pid_at_launch = 2660435
+swanlab = https://swanlab.cn/@iamwan/ocl4aid/runs/3c3f0vq5q9mw83yt1r1r8
+train_log = /home/home/yabin/ocl4aid/run_logs/caid10inc_dualprompt_s1_bigprompt_savebase_e110_le50_lr5e3_b2/seed_1_train.log
+launch_log = /home/home/yabin/ocl4aid/run_logs/caid10inc_dualprompt_s1_bigprompt_savebase_e110_le50_lr5e3_b2_20260623_230005.log
+```
+
+Confirmed configuration from the launch log:
+
+```text
+base_stage_epochs = 2
+save_base_checkpoint = true
+base_checkpoint_dir = /home/home/yabin/ocl4aid/run_logs/base_checkpoints
+batchsize = 16
+online_iter = 1
+eval_interval = 20000
+n_worker = 24
+lr = 0.005
+transforms = []
+no_batchmask = true
+e_pool = 110
+len_g_prompt = 20
+len_e_prompt = 50
+pos_g_prompt = [0, 1]
+pos_e_prompt = [2, 3, 4, 5, 6, 7, 8, 9]
+total_parameters = 119707394
+learnable_parameters = 33908738
+```
+
+Expected base checkpoint path after base stage finishes:
+
+```text
+/home/home/yabin/ocl4aid/run_logs/base_checkpoints/base_dualprompt_vit_base_patch16_224_model_appearance_order_protocol_10inc_seed1_stage0_epochs2.pt
+```
+
+Exact launch command, with the SwanLab API key intentionally redacted:
+
+```bash
+cd /home/home/yabin/ocl4aid
+
+export SWANLAB_API_KEY="<redacted>"
+export CUDA_VISIBLE_DEVICES=0
+export PYTHONUNBUFFERED=1
+
+/home/home/yabin/miniconda3/envs/cl/bin/python main.py \
+  --config configs/framework/caidbench.yaml \
+  --method dualprompt \
+  --caidbench_data_dir /home/home/yabin/CAIDBench \
+  --caidbench_protocol protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml \
+  --base_stage_epochs 2 \
+  --save_base_checkpoint \
+  --base_checkpoint_dir /home/home/yabin/ocl4aid/run_logs/base_checkpoints \
+  --stage_blurry_n 50 \
+  --stage_blurry_m 20 \
+  --online_iter 1 \
+  --batchsize 16 \
+  --eval_interval 20000 \
+  --n_worker 24 \
+  --swanlab \
+  --swanlab_project ocl4aid \
+  --swanlab_mode cloud \
+  --swanlab_group caid10inc-mainblurry \
+  --swanlab_experiment_name caid10inc-dualprompt-s1-bigprompt-savebase-e110-le50-lr5e3-b2 \
+  --swanlab_tags caid10inc mainblurry dualprompt bigprompt savebase e110 le50 lr5e3 b2 noautoaug \
+  --log_path /home/home/yabin/ocl4aid/run_logs \
+  --note caid10inc_dualprompt_s1_bigprompt_savebase_e110_le50_lr5e3_b2 \
+  --no_batchmask \
+  --e_pool 110 \
+  --len_g_prompt 20 \
+  --len_e_prompt 50 \
+  --pos_g_prompt 0 1 \
+  --pos_e_prompt 2 3 4 5 6 7 8 9 \
+  --lr 0.005 \
+  --transforms
 ```
 
 Current A6000 SPrompt run configuration:

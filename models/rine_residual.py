@@ -63,7 +63,7 @@ class RINEResidual(nn.Module):
         rine_residual_online_head_type: str = None,
         rine_residual_rank: int = 64,
         rine_residual_hidden_dim: int = 512,
-        rine_residual_eval_mode: str = "task_oracle",
+        rine_residual_eval_mode: str = "max_fake",
         pretrained: bool = True,
         **kwargs,
     ):
@@ -86,7 +86,7 @@ class RINEResidual(nn.Module):
         self.hidden_dim = int(rine_residual_hidden_dim)
         self.eval_mode = str(rine_residual_eval_mode)
         self.active_stage = 0
-        if self.eval_mode not in {"max_fake", "max_confidence", "task_oracle"}:
+        if self.eval_mode not in {"max_fake", "max_confidence"}:
             raise ValueError(f"Unsupported rine_residual_eval_mode: {self.eval_mode}")
 
         if hasattr(vit, backbone_name):

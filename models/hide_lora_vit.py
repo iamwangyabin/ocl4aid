@@ -6,6 +6,7 @@ import torch.nn.functional as F
 
 from . import vit as custom_vit
 from .experts import LoRAExpert
+from .flyprompt import RPFC
 
 
 class HiDeLoRAModel(nn.Module):
@@ -41,6 +42,18 @@ class HiDeLoRAModel(nn.Module):
         self.prompt_head = nn.Linear(D, num_classes)
         self.g_mlp = nn.Sequential(nn.Linear(D, D), nn.ReLU(inplace=True))
         self.g_head = nn.Linear(D, num_classes)
+        self.use_rp_gate = kwargs.get("use_rp_gate", False)
+        rp_dim = kwargs.get("rp_dim", 0)
+        rp_ridge = kwargs.get("rp_ridge", 1e4)
+        if self.use_rp_gate:
+            self.rp_gate = RPFC(
+                M=rp_dim,
+                ridge=rp_ridge,
+                embed_dim=D,
+                num_classes=task_num,
+            )
+        else:
+            self.rp_gate = None
         # statistics for prompt branch (backbone features)
         self.register_buffer("p_count", torch.zeros(num_classes))
         self.register_buffer("p_sum", torch.zeros(num_classes, D))
@@ -118,6 +131,29 @@ class HiDeLoRAModel(nn.Module):
         if update_stats and labels is not None:
             self._update_stats(h.detach(), labels, branch="gate")
         return logit, h
+
+    @torch.no_grad()
+    def forward_with_rp(self, x: torch.Tensor) -> torch.Tensor:
+        if self.rp_gate is None:
+            raise RuntimeError("RPFC gating is disabled (use_rp_gate=False).")
+        feats_seq = self.backbone.forward_features(x)
+        feat = feats_seq[:, 0]
+        h = self.g_mlp(feat)
+        return self.rp_gate(h)
+
+    @torch.no_grad()
+    def collect_rp(self, x: torch.Tensor, task_labels: torch.Tensor) -> None:
+        if self.rp_gate is None:
+            return
+        feats_seq = self.backbone.forward_features(x)
+        feat = feats_seq[:, 0]
+        h = self.g_mlp(feat)
+        self.rp_gate.collect(h, task_labels)
+
+    @torch.no_grad()
+    def update(self) -> None:
+        if self.rp_gate is not None:
+            self.rp_gate.update()
 
     def compute_orth_loss(
         self,

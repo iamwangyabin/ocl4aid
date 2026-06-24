@@ -182,10 +182,6 @@ class RINEResidual(_Trainer):
         *,
         normalize_loaded_tensors: bool = False,
     ):
-        oracle_expert_id = None
-        if getattr(self.model_without_ddp, "eval_mode", "task_oracle") == "task_oracle":
-            oracle_expert_id = self._infer_stage_id_from_indices(dataset, indices)
-
         subset = dataset.make_eval_subset(indices)
         loader = DataLoader(
             subset,
@@ -207,16 +203,12 @@ class RINEResidual(_Trainer):
                 if normalize_loaded_tensors:
                     images = self.test_transform_tensor(images)
                 images = images.to(self.device)
-                if oracle_expert_id is None:
-                    logits, expert_ids = self._protocol_eval_logits_and_experts(images)
-                else:
-                    logits = self._protocol_eval_logits_for_expert(images, oracle_expert_id)
-                    expert_ids = None
+                logits, expert_ids = self._protocol_eval_logits_and_experts(images)
 
                 batch_fake_scores = self._fake_scores_from_logits(logits).detach().cpu().tolist()
                 if expert_ids is None:
                     thresholds = [
-                        self._threshold_for_expert(int(oracle_expert_id or 0))
+                        float(getattr(self, "_decision_threshold", 0.5))
                         for _ in batch_fake_scores
                     ]
                 else:
@@ -274,26 +266,6 @@ class RINEResidual(_Trainer):
             )
         )
 
-    def _infer_stage_id_from_indices(self, dataset, indices):
-        if not indices:
-            return None
-        metadata = getattr(dataset, "metadata", None)
-        if metadata is None:
-            return None
-        stage_ids = metadata.iloc[list(indices)]["_online_stage_id"].astype(int).unique().tolist()
-        if len(stage_ids) != 1:
-            return None
-        return int(stage_ids[0])
-
-    def _protocol_eval_logits_for_expert(self, images, expert_id):
-        model = self.model_without_ddp
-        z, online_z = model.extract_base_and_online_z(images)
-        expert_id = int(expert_id or 0)
-        if expert_id <= 0 or not model.residual_heads:
-            return model.base_head(z) + self.mask
-        expert_idx = min(expert_id - 1, len(model.residual_heads) - 1)
-        return model.residual_heads[expert_idx](online_z) + self.mask
-
     def _protocol_eval_logits_and_experts(self, images):
         model = self.model_without_ddp
         z, online_z = model.extract_base_and_online_z(images)
@@ -303,7 +275,7 @@ class RINEResidual(_Trainer):
             return logits, expert_ids
 
         expert_logits = model.expert_logits_from_z(z, online_z=online_z) + self.mask.view(1, 1, -1)
-        if getattr(model, "eval_mode", "task_oracle") == "max_confidence":
+        if getattr(model, "eval_mode", "max_fake") == "max_confidence":
             expert_scores = torch.softmax(expert_logits, dim=-1).max(dim=-1).values
         else:
             expert_scores = torch.softmax(expert_logits, dim=-1)[:, :, 1]
