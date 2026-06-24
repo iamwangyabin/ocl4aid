@@ -1,0 +1,51 @@
+data:
+  protocol: protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml
+  image_column: image
+
+run:
+  seeds: [1]
+  log_dir: run_logs
+  note: ""
+
+model:
+  backbone: vit_base_patch16_224
+  pretrained: true
+
+train:
+  optimizer: adamw
+  scheduler: cosine
+  amp: true
+  workers: 24
+  batch_size: 16
+  lr: 0.001
+  online_iter: 1
+  base_stage_epochs: 2
+  save_base_checkpoint: true
+  base_checkpoint_only: false
+  stage_blurry_n: 50
+  stage_blurry_m: 20
+  transforms: []
+  batch_mask: false
+  topk: 1
+
+eval:
+  interval: 20000
+
+tracking:
+  swanlab: false
+  project: ocl4aid
+  mode: cloud
+  group: caid10inc-mainblurry
+  tags: [caid10inc, mainblurry, fastbase, noautoaug]
+
+method_overrides:
+  codaprompt:
+    e_pool: 110
+  dualprompt:
+    lr: 0.005
+    len_g_prompt: 20
+    pos_e_prompt: [2, 3, 4, 5, 6, 7, 8, 9]
+    len_e_prompt: 50
+    e_pool: 110
+  ranpac:
+    ranpac_M: 4096

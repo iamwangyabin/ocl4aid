@@ -65,6 +65,15 @@ def _framework_defaults(payload):
         ("train", "topk"): "topk",
         ("eval", "interval"): "eval_interval",
         ("tracking", "swanlab"): "use_swanlab",
+        ("tracking", "project"): "swanlab_project",
+        ("tracking", "workspace"): "swanlab_workspace",
+        ("tracking", "experiment_name"): "swanlab_experiment_name",
+        ("tracking", "description"): "swanlab_description",
+        ("tracking", "group"): "swanlab_group",
+        ("tracking", "tags"): "swanlab_tags",
+        ("tracking", "mode"): "swanlab_mode",
+        ("tracking", "logdir"): "swanlab_logdir",
+        ("tracking", "public"): "swanlab_public",
     }
     defaults = {}
     for path, dest in mapping.items():
@@ -81,6 +90,20 @@ def _method_defaults(method):
     defaults = _load_yaml(Path("configs/methods") / "common.yaml")
     defaults.update(_load_yaml(Path("configs/methods") / f"{method}.yaml"))
     return defaults
+
+
+def _framework_method_overrides(payload, method):
+    overrides = payload.get("method_overrides", {}) if isinstance(payload, dict) else {}
+    if not isinstance(overrides, dict):
+        return {}
+    method_overrides = {}
+    common = overrides.get("common", {})
+    if isinstance(common, dict):
+        method_overrides.update(common)
+    specific = overrides.get(method, {})
+    if isinstance(specific, dict):
+        method_overrides.update(specific)
+    return method_overrides
 
 
 def _parse_cli_value(value):
@@ -161,6 +184,7 @@ def base_parser():
     defaults = _framework_defaults(framework_config)
     method = pre_args.method or "l2p"
     defaults.update(_method_defaults(method))
+    defaults.update(_framework_method_overrides(framework_config, method))
     defaults["method"] = method
 
     parser = argparse.ArgumentParser(
@@ -179,24 +203,24 @@ def base_parser():
     parser.add_argument("--no_swanlab", dest="use_swanlab",
                         action="store_false",
                         help="Disable SwanLab experiment tracking.")
-    parser.add_argument("--swanlab_project", type=str, default="ocl4aid",
+    parser.add_argument("--swanlab_project", type=str, default=defaults.get("swanlab_project", "ocl4aid"),
                         help="SwanLab project name.")
-    parser.add_argument("--swanlab_workspace", type=str, default=None,
+    parser.add_argument("--swanlab_workspace", type=str, default=defaults.get("swanlab_workspace"),
                         help="SwanLab workspace/organization username. Defaults to personal workspace.")
-    parser.add_argument("--swanlab_experiment_name", type=str, default=None,
+    parser.add_argument("--swanlab_experiment_name", type=str, default=defaults.get("swanlab_experiment_name"),
                         help="SwanLab experiment name. Defaults to '<note_or_method>_<YYYYmmdd_HHMMSS>'.")
-    parser.add_argument("--swanlab_description", type=str, default=None,
+    parser.add_argument("--swanlab_description", type=str, default=defaults.get("swanlab_description"),
                         help="SwanLab experiment description.")
-    parser.add_argument("--swanlab_group", type=str, default=None,
+    parser.add_argument("--swanlab_group", type=str, default=defaults.get("swanlab_group"),
                         help="SwanLab experiment group.")
-    parser.add_argument("--swanlab_tags", nargs="*", default=None,
+    parser.add_argument("--swanlab_tags", nargs="*", default=defaults.get("swanlab_tags"),
                         help="SwanLab experiment tags.")
-    parser.add_argument("--swanlab_mode", type=str, default="cloud",
+    parser.add_argument("--swanlab_mode", type=str, default=defaults.get("swanlab_mode", "cloud"),
                         choices=["cloud", "local", "offline", "disabled"],
                         help="SwanLab logging mode.")
-    parser.add_argument("--swanlab_logdir", type=str, default=None,
+    parser.add_argument("--swanlab_logdir", type=str, default=defaults.get("swanlab_logdir"),
                         help="Directory for SwanLab local/offline logs. Defaults to the run log directory.")
-    parser.add_argument("--swanlab_public", action="store_true", default=False,
+    parser.add_argument("--swanlab_public", action="store_true", default=defaults.get("swanlab_public", False),
                         help="Create the SwanLab project as public when applicable.")
 
     # ============ Model configuration =============

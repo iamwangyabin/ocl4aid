@@ -47,6 +47,22 @@ optimizer, batch size, online update budget, and evaluation interval. Use it to
 debug method behavior and to provide a compact short-horizon comparison; do not
 mix `CAID-10inc` numbers with the main `CAID-50` table.
 
+Use the checked-in framework presets instead of repeating protocol/stream
+arguments on every launch:
+
+```text
+configs/framework/caidbench_10inc_mainblurry.yaml
+configs/framework/caidbench_10inc_mainblurry_fastbase.yaml
+```
+
+The first preset is the formal CAID-10inc main-blurry setup with
+`base_stage_epochs=10`. The second is the fast diagnostic setup used for recent
+server checks: `base_stage_epochs=2`, saved base checkpoints, no AutoAugment,
+no batch mask, `stage_blurry_n=50`, and `stage_blurry_m=20`.
+Both presets also carry per-method experiment overrides for the command-line
+settings used in current CAID-10inc runs: `codaprompt.e_pool=110`,
+DualPrompt's larger prompt layout and `lr=0.005`, and `ranpac.ranpac_M=4096`.
+
 The base stage checkpoint can be saved once per method/seed and reused across
 stream settings. Use `--save_base_checkpoint --base_checkpoint_only` to
 precompute the base, then use `--load_base_checkpoint auto` for hard, mild,
@@ -648,35 +664,15 @@ export CUDA_VISIBLE_DEVICES=0
 export PYTHONUNBUFFERED=1
 
 /home/home/yabin/miniconda3/envs/cl/bin/python main.py \
-  --config configs/framework/caidbench.yaml \
+  --config configs/framework/caidbench_10inc_mainblurry_fastbase.yaml \
   --method dualprompt \
   --caidbench_data_dir /home/home/yabin/CAIDBench \
-  --caidbench_protocol protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml \
-  --base_stage_epochs 2 \
-  --save_base_checkpoint \
   --base_checkpoint_dir /home/home/yabin/ocl4aid/run_logs/base_checkpoints \
-  --stage_blurry_n 50 \
-  --stage_blurry_m 20 \
-  --online_iter 1 \
-  --batchsize 16 \
-  --eval_interval 20000 \
-  --n_worker 24 \
   --swanlab \
-  --swanlab_project ocl4aid \
-  --swanlab_mode cloud \
-  --swanlab_group caid10inc-mainblurry \
   --swanlab_experiment_name caid10inc-dualprompt-s1-bigprompt-savebase-e110-le50-lr5e3-b2 \
   --swanlab_tags caid10inc mainblurry dualprompt bigprompt savebase e110 le50 lr5e3 b2 noautoaug \
   --log_path /home/home/yabin/ocl4aid/run_logs \
-  --note caid10inc_dualprompt_s1_bigprompt_savebase_e110_le50_lr5e3_b2 \
-  --no_batchmask \
-  --e_pool 110 \
-  --len_g_prompt 20 \
-  --len_e_prompt 50 \
-  --pos_g_prompt 0 1 \
-  --pos_e_prompt 2 3 4 5 6 7 8 9 \
-  --lr 0.005 \
-  --transforms
+  --note caid10inc_dualprompt_s1_bigprompt_savebase_e110_le50_lr5e3_b2
 ```
 
 Current A6000 SPrompt run configuration:
