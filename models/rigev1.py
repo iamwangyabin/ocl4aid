@@ -49,21 +49,22 @@ class MLPResidualHead(nn.Module):
         return self.net(z.float())
 
 
-class RINEResidual(nn.Module):
-    """Frozen high-dimensional ViT features with progressive residual heads."""
+class RIGEv1(nn.Module):
+    """Residual Incremental Gaussian Experts v1."""
 
     def __init__(
         self,
         task_num: int = 10,
         num_classes: int = 2,
         backbone_name: str = None,
-        rine_residual_feature_layers="quartile",
-        rine_residual_online_feature_layers=None,
-        rine_residual_head_type: str = "lowrank",
-        rine_residual_online_head_type: str = None,
-        rine_residual_rank: int = 64,
-        rine_residual_hidden_dim: int = 512,
-        rine_residual_eval_mode: str = "max_fake",
+        rigev1_feature_layers="quartile",
+        rigev1_online_feature_layers=None,
+        rigev1_head_type: str = "lowrank",
+        rigev1_online_head_type: str = None,
+        rigev1_rank: int = 64,
+        rigev1_hidden_dim: int = 512,
+        rigev1_eval_mode: str = "max_fake",
+        rigev1_alpha_init: float = 0.2,
         pretrained: bool = True,
         **kwargs,
     ):
@@ -71,23 +72,36 @@ class RINEResidual(nn.Module):
         del kwargs
         if backbone_name is None:
             raise ValueError("backbone_name must be specified")
-        if rine_residual_head_type not in {"lowrank", "linear", "mlp"}:
-            raise ValueError(f"Unsupported rine_residual_head_type: {rine_residual_head_type}")
-        if rine_residual_online_head_type in {None, "", "same"}:
-            rine_residual_online_head_type = rine_residual_head_type
-        if rine_residual_online_head_type not in {"lowrank", "linear", "mlp"}:
-            raise ValueError(f"Unsupported rine_residual_online_head_type: {rine_residual_online_head_type}")
+        if rigev1_head_type not in {"lowrank", "linear", "mlp"}:
+            raise ValueError(f"Unsupported rigev1_head_type: {rigev1_head_type}")
+        if rigev1_online_head_type in {None, "", "same"}:
+            rigev1_online_head_type = rigev1_head_type
+        if rigev1_online_head_type not in {"lowrank", "linear", "mlp"}:
+            raise ValueError(
+                f"Unsupported rigev1_online_head_type: {rigev1_online_head_type}"
+            )
 
         self.task_num = int(task_num)
         self.num_classes = int(num_classes)
-        self.head_type = str(rine_residual_head_type)
-        self.online_head_type = str(rine_residual_online_head_type)
-        self.rank = int(rine_residual_rank)
-        self.hidden_dim = int(rine_residual_hidden_dim)
-        self.eval_mode = str(rine_residual_eval_mode)
+        self.head_type = str(rigev1_head_type)
+        self.online_head_type = str(rigev1_online_head_type)
+        self.rank = int(rigev1_rank)
+        self.hidden_dim = int(rigev1_hidden_dim)
+        self.eval_mode = str(rigev1_eval_mode)
+        self.alpha_init = float(rigev1_alpha_init)
         self.active_stage = 0
-        if self.eval_mode not in {"max_fake", "max_confidence"}:
-            raise ValueError(f"Unsupported rine_residual_eval_mode: {self.eval_mode}")
+        if self.eval_mode not in {
+            "max_fake",
+            "max_confidence",
+            "max_margin",
+            "mean_margin",
+            "top2_margin",
+            "gate_margin",
+            "feature_gaussian",
+            "oracle_current",
+            "latest",
+        }:
+            raise ValueError(f"Unsupported rigev1_eval_mode: {self.eval_mode}")
 
         if hasattr(vit, backbone_name):
             logger.info("Using custom ViT model: %s", backbone_name)
@@ -107,20 +121,20 @@ class RINEResidual(nn.Module):
 
         self.depth = len(self.backbone.blocks)
         self.embed_dim = int(getattr(self.backbone, "embed_dim", self.backbone.num_features))
-        self.feature_layers = self._resolve_feature_layers(rine_residual_feature_layers)
-        if rine_residual_online_feature_layers in {None, "", "same"}:
-            rine_residual_online_feature_layers = rine_residual_feature_layers
-        self.online_feature_layers = self._resolve_feature_layers(rine_residual_online_feature_layers)
+        self.feature_layers = self._resolve_feature_layers(rigev1_feature_layers)
+        if rigev1_online_feature_layers in {None, "", "same"}:
+            rigev1_online_feature_layers = rigev1_feature_layers
+        self.online_feature_layers = self._resolve_feature_layers(rigev1_online_feature_layers)
         self.feature_dim = len(self.feature_layers) * self.embed_dim
         self.online_feature_dim = len(self.online_feature_layers) * self.embed_dim
         logger.info(
-            "RINE-Residual base feature layers: %s of %s blocks | feature_dim=%s",
+            "RIGEv1 base feature layers: %s of %s blocks | feature_dim=%s",
             [layer + 1 for layer in self.feature_layers],
             self.depth,
             self.feature_dim,
         )
         logger.info(
-            "RINE-Residual online feature layers: %s of %s blocks | feature_dim=%s",
+            "RIGEv1 online feature layers: %s of %s blocks | feature_dim=%s",
             [layer + 1 for layer in self.online_feature_layers],
             self.depth,
             self.online_feature_dim,
@@ -128,6 +142,7 @@ class RINEResidual(nn.Module):
 
         self.base_head = self._make_head(self.head_type)
         self.residual_heads = nn.ModuleList()
+        self.residual_alphas = nn.ParameterList()
 
     def set_backbone_trainable(self, trainable: bool):
         for param in self.backbone.parameters():
@@ -159,6 +174,7 @@ class RINEResidual(nn.Module):
                 except RuntimeError:
                     logger.warning("Failed to initialize residual head from base head; using random init.")
             self.residual_heads.append(head)
+            self.residual_alphas.append(nn.Parameter(torch.tensor(self.alpha_init, dtype=torch.float32)))
         self.active_stage = stage_id
         self.set_train_stage(stage_id)
         return self.residual_heads[stage_id - 1]
@@ -170,11 +186,35 @@ class RINEResidual(nn.Module):
         for idx, head in enumerate(self.residual_heads, start=1):
             for param in head.parameters():
                 param.requires_grad = idx == stage_id
+        for idx, alpha in enumerate(self.residual_alphas, start=1):
+            alpha.requires_grad = idx == stage_id
 
     def current_head(self):
         if self.active_stage == 0:
             return self.base_head
         return self.residual_heads[self.active_stage - 1]
+
+    def current_alpha(self):
+        if self.active_stage <= 0:
+            return None
+        return self.residual_alphas[self.active_stage - 1]
+
+    def combined_logits_from_z(
+        self,
+        z: torch.Tensor,
+        online_z: torch.Tensor = None,
+        expert_id: int = None,
+    ) -> torch.Tensor:
+        online_z = z if online_z is None else online_z
+        expert_id = self.active_stage if expert_id is None else int(expert_id)
+        base_logits = self.base_head(z)
+        if expert_id <= 0:
+            return base_logits
+        residual_index = expert_id - 1
+        if residual_index >= len(self.residual_heads):
+            raise IndexError(f"Residual expert {expert_id} is not available")
+        alpha = self.residual_alphas[residual_index].to(dtype=base_logits.dtype)
+        return base_logits + alpha * self.residual_heads[residual_index](online_z)
 
     def extract_z(self, inputs: torch.Tensor, feature_layers=None) -> torch.Tensor:
         layers = self.feature_layers if feature_layers is None else list(feature_layers)
@@ -220,9 +260,10 @@ class RINEResidual(nn.Module):
 
     def expert_logits_from_z(self, z: torch.Tensor, online_z: torch.Tensor = None) -> torch.Tensor:
         online_z = z if online_z is None else online_z
-        experts = [self.base_head(z)]
-        for head in self.residual_heads:
-            experts.append(head(online_z))
+        base_logits = self.base_head(z)
+        experts = [base_logits]
+        for head, alpha in zip(self.residual_heads, self.residual_alphas):
+            experts.append(base_logits + alpha.to(dtype=base_logits.dtype) * head(online_z))
         return torch.stack(experts, dim=1)
 
     def eval_logits_from_z(self, z: torch.Tensor, online_z: torch.Tensor = None) -> torch.Tensor:
@@ -230,8 +271,19 @@ class RINEResidual(nn.Module):
         if not self.residual_heads:
             return self.base_head(z)
         expert_logits = self.expert_logits_from_z(z, online_z=online_z)
+        if self.eval_mode in {"oracle_current", "latest"}:
+            expert_id = min(max(int(self.active_stage), 0), expert_logits.size(1) - 1)
+            return expert_logits[:, expert_id]
         if self.eval_mode == "max_confidence":
             expert_scores = torch.softmax(expert_logits, dim=-1).max(dim=-1).values
+        elif self.eval_mode in {
+            "max_margin",
+            "mean_margin",
+            "top2_margin",
+            "gate_margin",
+            "feature_gaussian",
+        } and expert_logits.size(-1) >= 2:
+            expert_scores = expert_logits[:, :, 1] - expert_logits[:, :, 0]
         else:
             expert_scores = torch.softmax(expert_logits, dim=-1)[:, :, 1]
         expert_ids = torch.argmax(expert_scores, dim=1)
@@ -262,14 +314,14 @@ class RINEResidual(nn.Module):
                 return list(range(max(0, depth - 4), depth))
             raw_layers = [item.strip() for item in spec.split(",") if item.strip()]
         if not raw_layers:
-            raise ValueError("rine_residual_feature_layers must not be empty")
+            raise ValueError("rigev1_feature_layers must not be empty")
 
         layers = []
         for item in raw_layers:
             layer = int(item) - 1
             if layer < 0 or layer >= depth:
                 raise ValueError(
-                    f"rine_residual_feature_layers values must be 1..{depth}, got {item}"
+                    f"rigev1_feature_layers values must be 1..{depth}, got {item}"
                 )
             if layer not in layers:
                 layers.append(layer)

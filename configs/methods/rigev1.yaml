@@ -1,0 +1,25 @@
+# RIGEv1: Residual Incremental Gaussian Experts.
+rigev1_feature_layers: quartile
+rigev1_online_feature_layers: same
+rigev1_head_type: lowrank
+rigev1_online_head_type: linear
+rigev1_rank: 16
+rigev1_hidden_dim: 512
+rigev1_eval_mode: feature_gaussian
+rigev1_alpha_init: 0.2
+rigev1_threshold_mode: gaussian_midpoint
+rigev1_eval_fake_prior: 0.5
+rigev1_inner_steps: 5
+rigev1_replay_window: 8192
+rigev1_replay_batch_size: 128
+rigev1_update_all_expert_calibration: false
+rigev1_route_use_eval_transform: true
+rigev1_route_normalize_features: true
+rigev1_route_variance_floor: 0.0001
+rigev1_route_min_count: 2
+rigev1_route_rebuild_max_samples: 20000
+rigev1_calibration_score_drift_threshold: 0.2
+rigev1_calibration_drift_ema_beta: 0.9
+rigev1_calibration_score_window: 5000
+rigev1_dump_score_data: false
+rigev1_weight_decay: 0.0001

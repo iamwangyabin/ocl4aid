@@ -140,7 +140,7 @@ presets include per-method experiment overrides currently used for
 `configuration/config.py` only declares framework-level CLI flags. Method
 hyperparameters are injected from the method YAML, and can still be overridden
 from the command line with the same key name, for example
-`--len_prompt 10` or `--rine_residual_inner_steps 2`. Do not add a new parser
+`--len_prompt 10` or `--rigev1_inner_steps 5`. Do not add a new parser
 entry for every method-specific option.
 
 The default framework optimizer is AdamW with `CosineAnnealingLR`; the default

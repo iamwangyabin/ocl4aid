@@ -11,7 +11,7 @@ from .sdlora import SDLoRAModel
 from .singleprompt import SinglePrompt
 from .sprompt import SPrompt
 from .rineside_gauss import RineSideGauss
-from .rine_residual import RINEResidual
+from .rigev1 import RIGEv1
 
 MODELS = {
     "codaprompt": CodaPrompt,
@@ -28,5 +28,5 @@ MODELS = {
     "singleprompt": SinglePrompt,
     "sprompt": SPrompt,
     "rineside_gauss": RineSideGauss,
-    "rine_residual": RINEResidual,
+    "rigev1": RIGEv1,
 }
