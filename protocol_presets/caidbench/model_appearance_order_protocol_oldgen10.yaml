@@ -1,0 +1,72 @@
+# CAID-OldGen10 short-horizon continual protocol.
+# Stage 0 is the supervised ProGAN base stage. The remaining 10 stages use
+# pre/post-GAN-to-SD1.5-era generative models while excluding explicit
+# face-swap, talking-head, and face-manipulation methods.
+index_path: continual_index.parquet
+tasks:
+  - id: progan
+    name: "ProGAN"
+    numeric_id: 0
+    filter:
+      include:
+        task_id: 0
+  - id: biggan
+    name: "BigGAN"
+    numeric_id: 2
+    filter:
+      include:
+        task_id: 85
+  - id: ddim
+    name: "DDIM"
+    numeric_id: 12
+    filter:
+      include:
+        task_id: 21
+  - id: vqgan
+    name: "VQGAN"
+    numeric_id: 13
+    filter:
+      include:
+        task_id: 27
+  - id: adm
+    name: "ADM"
+    numeric_id: 17
+    filter:
+      include:
+        task_id: 35
+  - id: vqdm
+    name: "VQDM"
+    numeric_id: 20
+    filter:
+      include:
+        task_id: 59
+  - id: glide
+    name: "GLIDE"
+    numeric_id: 21
+    filter:
+      include:
+        task_id: 42
+  - id: ldm
+    name: "LDM"
+    numeric_id: 22
+    filter:
+      include:
+        task_id: 3
+  - id: wukong
+    name: "Wukong"
+    numeric_id: 26
+    filter:
+      include:
+        task_id: 60
+  - id: sd1_4
+    name: "SD1.4"
+    numeric_id: 27
+    filter:
+      include:
+        task_id: 52
+  - id: sd1_5
+    name: "SD1.5"
+    numeric_id: 28
+    filter:
+      include:
+        task_id: 53

@@ -1,0 +1,72 @@
+# CAID-Representative10 continual protocol.
+# Stage 0 is the supervised ProGAN base stage. The remaining 10 stages are the
+# lowest train/test-gap generators sampled from the Representative30 protocol,
+# then ordered by CAID's model-appearance numeric order for continual learning.
+index_path: continual_index.parquet
+tasks:
+  - id: progan
+    name: "ProGAN"
+    numeric_id: 0
+    filter:
+      include:
+        task_id: 0
+  - id: pluralistic
+    name: "Pluralistic"
+    numeric_id: 3
+    filter:
+      include:
+        task_id: 48
+  - id: lama
+    name: "LaMa"
+    numeric_id: 19
+    filter:
+      include:
+        task_id: 45
+  - id: vqdm
+    name: "VQDM"
+    numeric_id: 20
+    filter:
+      include:
+        task_id: 59
+  - id: glide
+    name: "GLIDE"
+    numeric_id: 21
+    filter:
+      include:
+        task_id: 42
+  - id: wukong
+    name: "Wukong"
+    numeric_id: 26
+    filter:
+      include:
+        task_id: 60
+  - id: midjourney_v5
+    name: "Midjourney v5"
+    numeric_id: 32
+    filter:
+      include:
+        task_id: 47
+  - id: rddm
+    name: "RDDM"
+    numeric_id: 38
+    filter:
+      include:
+        task_id: 10
+  - id: playground
+    name: "Playground"
+    numeric_id: 47
+    filter:
+      include:
+        task_id: 9
+  - id: lavi_bridge
+    name: "LaVi-Bridge"
+    numeric_id: 55
+    filter:
+      include:
+        task_id: 4
+  - id: infinity
+    name: "infinity"
+    numeric_id: 71
+    filter:
+      include:
+        task_id: 19

@@ -2,7 +2,9 @@ from typing import Dict, List
 
 import torch
 from sklearn.cluster import KMeans
+from torch.utils.data import DataLoader
 
+from datasets import safe_collate_drop_bad
 from methods._trainer import _Trainer
 
 
@@ -232,6 +234,54 @@ class SPrompt(_Trainer):
         for task_id, value in prototypes.items():
             if torch.is_tensor(value):
                 self.task_prototypes[int(task_id)] = value.detach().cpu().float()
+
+    def _after_base_checkpoint_loaded(self, checkpoint):
+        del checkpoint
+        base_stage_id = self._base_stage_id()
+        if base_stage_id is None or base_stage_id in self.task_prototypes:
+            return
+
+        indices = list(self.train_dataset.stage_indices.get(base_stage_id, []))
+        if not indices:
+            return
+        if len(indices) > self.max_features_per_task:
+            stride = max(1, len(indices) // self.max_features_per_task)
+            indices = indices[::stride][: self.max_features_per_task]
+
+        old_buffer = self._cur_task_features
+        was_training = self.model.training
+        self._cur_task_features = []
+        try:
+            subset = self.train_dataset.make_eval_subset(indices)
+            loader = DataLoader(
+                subset,
+                batch_size=max(1, min(64, self.batchsize * 4)),
+                shuffle=False,
+                num_workers=0,
+                pin_memory=False,
+                collate_fn=safe_collate_drop_bad,
+            )
+            for batch in loader:
+                if batch is None:
+                    continue
+                images, _labels, _binary_targets = batch
+                feats = self._extract_cls_feature(images)
+                self._append_cur_task_features(feats)
+
+            self._build_prototypes_for_task(base_stage_id)
+        finally:
+            self._cur_task_features = old_buffer
+            if was_training:
+                self.model.train()
+
+        if base_stage_id in self.task_prototypes:
+            import logging
+
+            logging.getLogger().info(
+                "Rebuilt SPrompt base prototypes for stage %s from %s samples",
+                base_stage_id,
+                len(indices),
+            )
 
     def _ensemble_logits(self, logit_ls):
         """Ensemble a list of logits from online and EMA heads.

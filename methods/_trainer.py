@@ -804,12 +804,12 @@ class _Trainer():
         if model_task_count is not None and hasattr(self.model_without_ddp, "task_count"):
             self.model_without_ddp.task_count = int(model_task_count)
 
-        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
-        self._move_optimizer_state_to_device()
-        self.scheduler.load_state_dict(checkpoint["scheduler_state"])
-        scaler_state = checkpoint.get("scaler_state")
-        if scaler_state is not None:
-            self.scaler.load_state_dict(scaler_state)
+        # A base checkpoint is a reusable initialization for online stages, not
+        # a full training resume. Reusing the base-stage optimizer/scheduler
+        # state would start online learning with a heavily decayed LR.
+        self.optimizer = select_optimizer(self.opt_name, self.lr, self.model)
+        self.scheduler = select_scheduler(self.sched_name, self.optimizer, self._scheduler_hparams())
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
         trainer_state = checkpoint.get("trainer_state", {})
         if "task_id" in trainer_state and trainer_state["task_id"] is not None:
@@ -836,6 +836,8 @@ class _Trainer():
         method_state = checkpoint.get("method_state", {})
         if method_state and hasattr(self, "_load_checkpoint_method_state"):
             self._load_checkpoint_method_state(method_state)
+        if hasattr(self, "_after_base_checkpoint_loaded"):
+            self._after_base_checkpoint_loaded(checkpoint)
         self._restore_rng_state(checkpoint.get("rng_state"))
         self._base_checkpoint_loaded = True
         self.phase = "base_loaded"
