@@ -41,9 +41,6 @@ class RIGEv1(_Trainer):
     def _cfg(self, name, default):
         return getattr(self, f"rigev1_{name}", default)
 
-    def _compatible_checkpoint_methods(self):
-        return {"rigev1", "rine_residual"}
-
     def online_before_task(self, task_id):
         self.task_id = int(task_id)
         model = self.model_without_ddp

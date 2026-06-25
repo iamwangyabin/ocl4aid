@@ -673,11 +673,8 @@ class _Trainer():
                 f"{metadata.get('format_version')!r}"
             )
 
-        saved_method = metadata.get("method")
-        compatible_methods = {self.method}
-        if hasattr(self, "_compatible_checkpoint_methods"):
-            compatible_methods.update(self._compatible_checkpoint_methods())
         checks = [
+            ("method", metadata.get("method"), self.method),
             ("backbone", metadata.get("backbone"), self.backbone),
             ("n_classes", metadata.get("n_classes"), self.n_classes),
             ("base_stage_id", metadata.get("base_stage_id"), self._base_stage_id()),
@@ -691,10 +688,6 @@ class _Trainer():
             checks.append(("rnd_seed", metadata.get("rnd_seed"), self.rnd_seed))
 
         mismatches = []
-        if saved_method is None:
-            mismatches.append(f"method: missing != {self.method!r}")
-        elif saved_method not in compatible_methods:
-            mismatches.append(f"method: {saved_method!r} not in {sorted(compatible_methods)!r}")
         for name, saved, expected in checks:
             if saved is None:
                 mismatches.append(f"{name}: missing != {expected!r}")
