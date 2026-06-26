@@ -1,606 +1,127 @@
 # Paper Experiments
 
-This document tracks the experiments needed for the CAIDBenchmark online
-continual deepfake detection paper.
+This document is the current experiment plan for the CAIDBenchmark online
+continual fake-image detection paper. It replaces the older CAID-10inc,
+CAID-AIGC10, and exploratory RINE notes.
 
-## Common Setup
+## Current Scope
 
-All method comparisons should use the same framework configuration unless a
-table explicitly states otherwise.
+The current paper setting is built around four CAID continual protocols rather
+than the older mixed 10inc setting. These four protocol lengths are all main
+experiments:
 
-```text
-base_stage_epochs = 10
-backbone = vit_base_patch16_224
-optimizer = adamw
-scheduler = cosine
-lr = 0.001
-online_iter = 1
-batchsize = 16
-eval_interval = 20000
-```
+| Protocol | YAML | Role |
+| --- | --- | --- |
+| Representative10 | `protocol_presets/caidbench/model_appearance_order_protocol_representative10.yaml` | Fast main setting and ablation setting. |
+| Representative20 | `protocol_presets/caidbench/model_appearance_order_protocol_representative20.yaml` | Medium main setting. |
+| Representative30 | `protocol_presets/caidbench/model_appearance_order_protocol_representative30.yaml` | Large representative main setting. |
+| CAID-50 | `protocol_presets/caidbench/model_appearance_order_protocol_50.yaml` | Full long-horizon main setting. |
 
-Stage 0 is the supervised base stage. In the default protocol this is ProGAN.
-With `base_stage_epochs=10`, every method first trains a supervised base detector
-on ProGAN for 10 epochs, then online continual learning starts from stage 1.
-Do not compare methods with different base-stage budgets.
-
-The preferred long-horizon protocol is `CAID-50`, defined by:
+`Representative10` stage order:
 
 ```text
-protocol_presets/caidbench/model_appearance_order_protocol_50.yaml
+ProGAN,
+Pluralistic,
+LaMa,
+VQDM,
+GLIDE,
+Wukong,
+Midjourney v5,
+RDDM,
+Playground,
+LaVi-Bridge,
+infinity
 ```
 
-`CAID-50` keeps the original time order, uses 50 generator stages, and requires
-each generator to have a balanced test split of 2000 images: 1000 real and 1000
-fake. This keeps final sample-level and generator-level test summaries aligned.
-
-The preferred short-horizon protocol is `CAID-AIGC10`, defined by:
+`Representative20` adds 10 more representative generators while preserving CAID
+model-appearance order:
 
 ```text
-protocol_presets/caidbench/model_appearance_order_protocol_aigc10.yaml
+ProGAN,
+Pluralistic,
+StyleGAN3,
+LaMa,
+VQDM,
+GLIDE,
+LDM,
+StyleGANXL,
+Wukong,
+DiT,
+Midjourney v5,
+RDDM,
+Kandinsky-3,
+Playground,
+PixArt-sigma,
+LaVi-Bridge,
+Janus,
+infinity,
+GPT-Image-1,
+Qwen-Image,
+Chroma
 ```
 
-`CAID-AIGC10` is a faster diagnostic setting with one supervised ProGAN base
-stage and 10 modern AIGC-era online generator stages. The 10 online stages are
-kept in the CAID model-appearance order: SD1.5, Midjourney v5, SDXL-base,
-DALL-E 3, Midjourney v6, Imagen 3.0, FLUX.1, SD3.5, GPT-Image-1, and
-Qwen-Image. It should use the same common training setup as `CAID-50`,
-including `base_stage_epochs=10`, backbone, optimizer, batch size, online
-update budget, and evaluation interval. Use it to debug method behavior and to
-provide a compact short-horizon comparison; do not mix `CAID-AIGC10` numbers
-with the main `CAID-50` table. The older `CAID-10inc` protocol is retained only
-for reproducing existing mixed classic/recent short-protocol runs.
-
-Use the checked-in framework presets instead of repeating protocol/stream
-arguments on every launch:
+`Representative30` is the larger representative protocol:
 
 ```text
-configs/framework/caidbench_50_hard.yaml
-configs/framework/caidbench_50_mainblurry.yaml
-configs/framework/caidbench_aigc10_mainblurry.yaml
-configs/framework/caidbench_aigc10_mainblurry_fastbase.yaml
-configs/framework/caidbench_10inc_mainblurry.yaml
-configs/framework/caidbench_10inc_mainblurry_fastbase.yaml
+ProGAN,
+Pluralistic,
+DDIM,
+VQGAN,
+StyleGAN3,
+LaMa,
+VQDM,
+GLIDE,
+LDM,
+StyleGANXL,
+Wukong,
+SD1.5,
+SD2.1,
+DiT,
+Midjourney v5,
+SDXL-base,
+RDDM,
+Kandinsky-3,
+Playground,
+SiT,
+PixArt-sigma,
+LaVi-Bridge,
+FLUX.1,
+Illustrious,
+Janus,
+SD3.5,
+infinity,
+GPT-Image-1,
+Imagen-4,
+Qwen-Image,
+Chroma
 ```
 
-The CAID-50 presets are the long-horizon hard-boundary control and main-blurry
-paper settings. The first CAID-AIGC10 preset is the formal short-horizon
-main-blurry setup with `base_stage_epochs=10`. The fastbase preset is the fast
-diagnostic setup used for recent server checks: `base_stage_epochs=2`, saved
-base checkpoints, no AutoAugment, no batch mask, `stage_blurry_n=50`, and
-`stage_blurry_m=20`. The AIGC10 and legacy CAID-10inc presets also carry
-per-method experiment overrides for the command-line settings used in current
-short-horizon runs: `codaprompt.e_pool=110`, DualPrompt's larger prompt layout
-and `lr=0.005`, and `ranpac.ranpac_M=4096`.
+The representative protocols were sampled from the generator pool using stable
+held-out test coverage and pooled-detector train/test behavior, then ordered by
+CAID model appearance order. `CAID-50` keeps the full long-horizon protocol.
 
-The base stage checkpoint can be saved once per method/seed and reused across
-stream settings. Use `--save_base_checkpoint --base_checkpoint_only` to
-precompute the base, then use `--load_base_checkpoint auto` for hard, mild,
-main, and strong blurry runs with the same method, backbone, protocol order,
-seed, and `base_stage_epochs`. If different stream queues use different
-`log_path` roots, set a shared `--base_checkpoint_dir` for all of them.
+## Core Invariants
 
-The learner supervision remains binary throughout all experiments:
+The learner-visible task remains binary detection:
 
 ```text
 real = 0
 fake = 1
 ```
 
-Generator stages define the stream and evaluation slices only. Dataset indices,
-generator names, protocol stage IDs, and benchmark task IDs must not be passed
-into `online_step`.
+Generator names, protocol stage IDs, dataset indices, and benchmark task IDs
+define stream/evaluation slices only. They must not be passed into
+`online_step`.
 
-## VirtAI Runtime Notes
+Stage 0 is the supervised ProGAN base stage. Online continual learning starts
+from stage 1 when `base_stage_epochs > 0`.
 
-For the VirtAI SSH job environment, use the mounted project directories rather
-than `/root` for persistent files:
+## Common Setup
 
-```text
-code:      /gemini/code        ($GEMINI_CODE)
-data:      /gemini/data-1      ($GEMINI_DATA_IN1)
-data:      /gemini/data-2      ($GEMINI_DATA_IN2)
-data:      /gemini/data-3      ($GEMINI_DATA_IN3)
-pretrain:  /gemini/pretrain    ($GEMINI_PRETRAIN)
-pretrain2: /gemini/pretrain2   ($GEMINI_PRETRAIN2)
-pretrain3: /gemini/pretrain3   ($GEMINI_PRETRAIN3)
-output:    /gemini/output      ($GEMINI_DATA_OUT, offline training)
-```
-
-Place this repository under `/gemini/code/ocl4aid`. Container-local paths such
-as `/root` are writable but temporary and may be lost when the container is
-restarted. Read datasets from `/gemini/data-*` and pretrained weights from
-`/gemini/pretrain*`.
-
-One checked VirtAI job exposes eight RTX 3090 devices through
-`/proc/driver/nvidia/gpus/*/information`, although `nvidia-smi` may print
-`SMI N/A`/`Driver Version: N/A` in the SSH shell. Before launching training,
-verify CUDA from Python after installing PyTorch:
-
-```python
-import torch
-print(torch.cuda.is_available())
-print(torch.cuda.device_count())
-```
-
-## Stream Settings
-
-The main benchmark should be the blurry stream. The hard stream is a control
-setting, not the primary benchmark.
-
-Temporal blur is applied only to online stages when the base stage is enabled.
-The effective adjacent-stage leakage ratio is:
+Use the same setup for all rows in one table unless an ablation explicitly
+states otherwise:
 
 ```text
-actual_leakage = (100 - stage_blurry_n) * stage_blurry_m / 10000
-```
-
-Run these stream settings:
-
-| Setting | `stage_blurry_n` | `stage_blurry_m` | Effective leakage |
-| --- | ---: | ---: | ---: |
-| Hard control | 100 | 0 | 0% |
-| Mild blurry | 50 | 10 | 5% |
-| Main blurry | 50 | 20 | 10% |
-| Strong blurry | 50 | 40 | 20% |
-
-Use `Main blurry` as the default paper setting.
-
-## Methods
-
-Required core methods:
-
-- `flyprompt`
-- `l2p`
-- `dualprompt`
-- `codaprompt`
-- `mvp`
-- `ranpac`
-
-Additional methods for complete paper tables when compute allows:
-
-- `slca`
-- `sprompt`
-- `singleprompt`
-- `sdlora`
-- `hide`
-- `norga`
-- `hide_lora`
-- `hide_adapter`
-
-All methods in the same table should use the same seed, backbone, batch size,
-online update budget, base-stage budget, and evaluation interval. For
-exploratory remote runs, use a single seed unless a final paper table explicitly
-requires multi-seed averaging.
-
-## Required Experiments
-
-### 1. Main Blurry Method Comparison
-
-Run all methods under:
-
-```text
-base_stage_epochs = 10
-stage_blurry_n = 50
-stage_blurry_m = 20
-actual leakage = 10%
-```
-
-This is the main paper table. During exploration, report final-stage summary
-metrics for the selected seed. Run multi-seed averaging only for final paper
-tables after the method set is fixed.
-
-Minimum methods:
-
-```text
-flyprompt, l2p, dualprompt, codaprompt, mvp, ranpac
-```
-
-Complete methods:
-
-```text
-flyprompt, l2p, dualprompt, codaprompt, mvp, ranpac, slca, sprompt,
-singleprompt, sdlora, hide, norga, hide_lora, hide_adapter
-```
-
-### 2. Hard Control Method Comparison
-
-Run the same methods under:
-
-```text
-base_stage_epochs = 10
-stage_blurry_n = 100
-stage_blurry_m = 0
-actual leakage = 0%
-```
-
-This is a control table showing performance under clean generator-stage
-boundaries.
-
-### 3. Blurry Strength Comparison
-
-Compare stream difficulty across:
-
-```text
-Hard control   n=100, m=0   leakage=0%
-Mild blurry    n=50,  m=10  leakage=5%
-Main blurry    n=50,  m=20  leakage=10%
-Strong blurry  n=50,  m=40  leakage=20%
-```
-
-If compute is limited, run only the core methods. If compute allows, run all
-methods.
-
-### 4. Online Curves
-
-Use `stream_metrics` from `seed_<seed>_ocl_metrics.json` to plot online
-performance over stream samples.
-
-Required curves for the main blurry setting:
-
-```text
-flyprompt, l2p, dualprompt, codaprompt, mvp, ranpac
-```
-
-Recommended axes:
-
-```text
-x-axis: online samples seen
-y-axis: average accuracy / f1 / ap / auc
-```
-
-The main figure can show accuracy and AUC. F1 and AP can go to the appendix.
-
-### 5. Short-Horizon AIGC10 Comparison
-
-Run the same core methods on `CAID-AIGC10`:
-
-```text
-protocol_presets/caidbench/model_appearance_order_protocol_aigc10.yaml
-```
-
-This setting has one supervised ProGAN base generator and 10 modern AIGC-era
-online incremental generators in CAID model-appearance order. It is mainly for
-rapid method debugging, ablation checks, and a compact short-horizon result
-table. Keep the same common setup and stream setting as the corresponding
-`CAID-50` experiment. For example, the short main blurry run should still use:
-
-```text
-base_stage_epochs = 10
-stage_blurry_n = 50
-stage_blurry_m = 20
-actual leakage = 10%
-```
-
-Report final-stage average metrics and online curves separately from the
-long-horizon `CAID-50` results.
-
-### 6. Final Summary Tables
-
-For each method and stream setting, report final-stage values from
-`seed_<seed>_ocl_metrics.json`.
-
-Primary metrics:
-
-```text
-avg accuracy
-avg auc
-forgetting
-plasticity
-```
-
-Secondary metrics:
-
-```text
-avg f1
-avg ap
-```
-
-### 7. Per-Generator Results
-
-For the main blurry setting, export final per-generator metrics for all
-generators in the selected protocol. For `CAID-50`, this means all 50 generator
-stages.
-
-Use this for appendix tables or heatmaps:
-
-```text
-generator x method: accuracy / auc / forgetting
-```
-
-This analysis should identify which generators are hardest and which earlier
-generators suffer the most forgetting.
-
-## Paper Table Templates
-
-Use these tables as the final paper experiment skeleton. Fill values from the
-final stage of `seed_<seed>_ocl_metrics.json` unless the table explicitly says
-otherwise. Use `mean ± std` only after multi-seed runs are available; for
-single-seed exploration, fill a single value.
-
-### Table 1. Main Results on CAID-50 Main Blurry
-
-Protocol: `CAID-50`; stream: `stage_blurry_n=50, stage_blurry_m=20`; base:
-ProGAN, 10 epochs.
-
-| Method | Final Avg Acc ↑ | Final Avg AUC ↑ | Final Avg AP ↑ | Final Avg F1 ↑ | AUC Forgetting ↓ | AUC Plasticity ↑ |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| FlyPrompt |  |  |  |  |  |  |
-| L2P |  |  |  |  |  |  |
-| DualPrompt |  |  |  |  |  |  |
-| CodaPrompt |  |  |  |  |  |  |
-| MVP |  |  |  |  |  |  |
-| RanPAC |  |  |  |  |  |  |
-| SLCA |  |  |  |  |  |  |
-| SPrompt |  |  |  |  |  |  |
-| SinglePrompt |  |  |  |  |  |  |
-| SD-LoRA |  |  |  |  |  |  |
-| HiDe |  |  |  |  |  |  |
-| NoRGa |  |  |  |  |  |  |
-| HiDe-LoRA |  |  |  |  |  |  |
-| HiDe-Adapter |  |  |  |  |  |  |
-| Ours |  |  |  |  |  |  |
-
-### Table 2. Hard-Control Results on CAID-50
-
-Protocol: `CAID-50`; stream: `stage_blurry_n=100, stage_blurry_m=0`; base:
-ProGAN, 10 epochs. This table isolates clean generator-stage boundaries.
-
-| Method | Final Avg Acc ↑ | Final Avg AUC ↑ | Final Avg AP ↑ | Final Avg F1 ↑ | AUC Forgetting ↓ | AUC Plasticity ↑ |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| FlyPrompt |  |  |  |  |  |  |
-| L2P |  |  |  |  |  |  |
-| DualPrompt |  |  |  |  |  |  |
-| CodaPrompt |  |  |  |  |  |  |
-| MVP |  |  |  |  |  |  |
-| RanPAC |  |  |  |  |  |  |
-| Ours |  |  |  |  |  |  |
-
-### Table 3. Blurry Strength Ablation on CAID-50
-
-Use the same method set and base checkpoint policy for all rows. If compute is
-limited, fill this table with core methods only.
-
-| Method | Hard AUC ↑ | Mild AUC ↑ | Main AUC ↑ | Strong AUC ↑ | Hard Fgt ↓ | Mild Fgt ↓ | Main Fgt ↓ | Strong Fgt ↓ |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| FlyPrompt |  |  |  |  |  |  |  |  |
-| L2P |  |  |  |  |  |  |  |  |
-| DualPrompt |  |  |  |  |  |  |  |  |
-| CodaPrompt |  |  |  |  |  |  |  |  |
-| MVP |  |  |  |  |  |  |  |  |
-| RanPAC |  |  |  |  |  |  |  |  |
-| Ours |  |  |  |  |  |  |  |  |
-
-### Table 4. Short-Horizon CAID-AIGC10 Results
-
-Protocol: `CAID-AIGC10`; stream should match the corresponding CAID-50 setting,
-usually main blurry.
-
-| Method | Final Avg Acc ↑ | Final Avg AUC ↑ | Final Avg AP ↑ | Final Avg F1 ↑ | AUC Forgetting ↓ | AUC Plasticity ↑ |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| FlyPrompt |  |  |  |  |  |  |
-| L2P |  |  |  |  |  |  |
-| DualPrompt |  |  |  |  |  |  |
-| CodaPrompt |  |  |  |  |  |  |
-| MVP |  |  |  |  |  |  |
-| RanPAC |  |  |  |  |  |  |
-| Ours |  |  |  |  |  |  |
-
-### Table 5. Ablation Study for the Proposed Method
-
-Use CAID-50 main blurry unless stated otherwise.
-
-| Variant | Final Avg Acc ↑ | Final Avg AUC ↑ | Final Avg AP ↑ | Final Avg F1 ↑ | AUC Forgetting ↓ | AUC Plasticity ↑ |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Full method |  |  |  |  |  |  |
-| w/o face crop |  |  |  |  |  |  |
-| w/o base checkpoint |  |  |  |  |  |  |
-| w/o online calibration |  |  |  |  |  |  |
-| hard stream only |  |  |  |  |  |  |
-| AIGC10 short protocol |  |  |  |  |  |  |
-
-### Appendix Table A1. Final Per-Generator Results
-
-Fill one row per generator from the final-stage matrix. Use this table for each
-important method, or convert it into a generator-by-method heatmap.
-
-| Generator | Acc ↑ | AUC ↑ | AP ↑ | F1 ↑ | Forgetting AUC ↓ |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| ProGAN |  |  |  |  |  |
-| DeepFakes |  |  |  |  |  |
-| BigGAN |  |  |  |  |  |
-| ... |  |  |  |  |  |
-| Z-Image |  |  |  |  |  |
-
-### Appendix Table A2. Forward and Backward Transfer
-
-Compute these from the full protocol matrix.
-
-| Method | Forward AUC ↑ | Forward AP ↑ | Backward AUC ↑ | Backward AP ↑ | Final Avg AUC ↑ |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| FlyPrompt |  |  |  |  |  |
-| L2P |  |  |  |  |  |
-| DualPrompt |  |  |  |  |  |
-| CodaPrompt |  |  |  |  |  |
-| MVP |  |  |  |  |  |
-| RanPAC |  |  |  |  |  |
-| Ours |  |  |  |  |  |
-
-## Active Execution Plan
-
-Last updated: 2026-06-20 CST.
-
-### CAID-10inc Result Audit
-
-Last consolidated on 2026-06-24 CST. The local source of truth is
-`outputs/caid10inc_results/summary.tsv`, with the full archived bundle at
-`outputs/caid10inc_results.tar.gz`.
-
-Complete CAID-10inc main-blurry runs currently available for a fair main table:
-
-| Method | Archived run | Notes |
-| --- | --- | --- |
-| FlyPrompt | `flyprompt_s1` | Complete final-stage result. |
-| L2P | `l2p_s1` | Complete final-stage result. |
-| DualPrompt | `dualprompt_bigprompt_s1` | Tuned prompt capacity; complete final-stage result. |
-| CodaPrompt | `codaprompt_s1` | Complete final-stage result. |
-| RanPAC | `ranpac_m4096_s1` | Complete final-stage result copied from `4090-2`; random projection dimension 4096. |
-| SD-LoRA | `sdlora_s1` | Complete final-stage result. |
-| RINE-Residual | `rine_residual_base_s1` | Non-oracle result; currently the only RINE row suitable for a main table. |
-
-CAID-10inc rows still missing from the full template:
-
-| Method | Status |
-| --- | --- |
-| MVP | No complete archived `seed_1_ocl_metrics.json` result. |
-| SLCA | Current `slca_s1` run is invalid: AP/AUC/F1 matrices are unchanged across all protocol stages, training loss stays near 0.693, and the code path is a plain full-ViT trainer rather than a real SLCA/classifier-alignment implementation. The result has been moved to `outputs/caid10inc_invalid_results/slca_s1`. |
-| SPrompt | Previously summarized, but the source `seed_1_ocl_metrics.json` is not currently present in `outputs/caid10inc_results/`; recover the raw result before using it in source-of-truth tables or curves. |
-| SinglePrompt | The available `caid10inc_singleprompt_s1(1).tgz` contains only logs/SwanLab files and no final metrics JSON. |
-| NoRGa | No complete archived `seed_1_ocl_metrics.json` result. |
-| HiDe | Existing `hide_s1` result used the original class-to-task fallback, which is invalid for binary CAID labels. Rerun after enabling the learned RPFC generator-stage router. |
-| HiDe-LoRA | Existing `hide_lora_s1` result used the original class-to-task fallback, which is invalid for binary CAID labels. Rerun after enabling the learned RPFC generator-stage router. |
-| HiDe-Adapter | Existing `hide_adapter_s1` result used the original class-to-task fallback, which is invalid for binary CAID labels. Rerun after enabling the learned RPFC generator-stage router. |
-
-Rows with `rine_taskoracle_*` or task-oracle-like routing are diagnostic only.
-They must not be used as main paper results because the evaluation route uses
-protocol-stage information that is unavailable in a task-agnostic deployment.
-These diagnostic RINE directories have been removed from the local
-`outputs/caid10inc_results/` archive; keep only `rine_residual_base_s1` there.
-
-Larger paper tables remain missing: all CAID-50 main-blurry results, all
-CAID-50 hard-control results, blurry-strength ablations, proposed-method
-ablations, and multi-seed mean/std runs. Current 10inc numbers are single-seed
-exploratory results.
-
-### RINE 10inc Status
-
-Last checked on `4090-2` on 2026-06-24. Task-oracle routing is not an
-acceptable protocol assumption for paper results: it uses the evaluation slice's
-protocol stage to select the expert head. RINE code now removes `task_oracle`
-and all `task_oracle_*` eval modes; valid runs must use task-agnostic head
-selection or aggregation. Current RINE-Residual code keeps only the baseline
-non-oracle eval modes `max_fake` and `max_confidence`. The exploratory
-`calibrated_mean`, `shared_online`, `base + residual`, prototype, memory-kNN,
-and online-router code paths were removed after negative checks.
-
-Invalidated task-oracle diagnostics found under `/home/yabin/ocl4aid/run_logs/`:
-
-| Run | Protocol stage | Final avg AP | Final avg AUC | Notes |
-| --- | ---: | ---: | ---: | --- |
-| `caid10inc_rine_residual_independent_taskoracle_linearhead_augbase100k_balprior_s1` | 10 | 0.8278 | 0.8295 | Invalid as a main result because expert selection uses protocol stage ID at evaluation. |
-| `caid10inc_rine_residual_independent_taskoracle_augbase100k_lr3e4_step1_fd01_s1_20260623` | 10 | 0.8258 | 0.8270 | Invalid as a main result; useful only as a diagnostic that lower LR helps BigGAN but hurts SD1.5/SDXL. |
-| `caid10inc_rine_residual_independent_baseinit_augbase100k_balprior_s1_20260623` | 10 | 0.8181 | 0.8246 | Invalid as a main result if run with task-oracle routing. |
-| `caid10inc_rine_residual_independent_baseinit_taskoracle_rank16_step2_loadbase_s1_20260623` | 10 | 0.7853 | 0.7933 | Invalid as a main result. |
-| `caid10inc_rine_residual_taskoracle_linearhead_degrade_j05_ds05_blur03_s1_20260623` | 10 | 0.7781 | 0.7864 | Invalid as a main result. |
-| `caid10inc_rine_residual_independent_taskoracle_linearhead_step2_s1_20260623` | 10 | 0.7727 | 0.7780 | Invalid as a main result. |
-
-Rows using reusable base checkpoints should be treated as fast direction checks,
-not final paper numbers. Current rescue runs load the augmented 100k 10inc base
-checkpoint and use strict `n=100,m=0` online exposure.
-
-Additional audit on `4090-2` confirms the 10inc stream itself is balanced and
-does not explain the RINE collapse. The training split has balanced real/fake
-labels in every online stage: ProGAN `360059/360059`, DeepFakes `5000/5000`,
-BigGAN `1506/1506`, StyleGAN2/DDIM/LDM `10000/10000`, and SD1.5/Midjourney
-v5/SDXL-base/FLUX.1/GPT-Image-1 `5000/5000`. Every test generator slice is
-also `1000/1000`. The stream sampler interleaves labels within each stage, so
-there is no one-class online exposure causing the head collapse.
-
-The main negative finding is stronger: even invalid task-oracle diagnostics are
-not close to 0.9 final avg AP, and the same generators stay weak when the
-correct expert is selected. For example, the strongest invalid task-oracle
-linear-head run reaches only final avg AP `0.8278`; its final StyleGAN2 AP is
-`0.4837`, DeepFakes AP `0.6709`, SD1.5 AP `0.6534`, and SDXL-base AP `0.7219`.
-This means head routing/aggregation alone is not a credible path to 0.9 unless
-the per-generator online heads themselves become much stronger.
-
-Exploratory aggregation branches were checked only as single-seed diagnostics
-and then deleted from the codebase. None of those branches read dataset indices,
-generator names, protocol stage IDs, or evaluation labels during training;
-`online_step` remained image + binary-label only.
-
-No valid 10inc final result is currently close to 0.9 AP. The strongest
-complete 10inc result that does not use task-oracle routing is
-`caid10inc_rine_residual_base1_s1_20260623` with final avg AP 0.6198. The best
-valid partial RINE direction so far is still only an early-stage diagnostic:
-`max_fake` reaches avg AP 0.8234 at stage 2, then falls to 0.6623 at stage 3.
-
-An `online_router` single-seed 10inc validation run was launched and stopped on
-`4090-2` on 2026-06-24 because it underperformed at the known StyleGAN2
-collapse point:
-
-```text
-run = caid10inc_rine_residual_onlinerouter_augbase100k_balprior_s1_20260624
-eval_mode = online_router
-stage 1 avg AP = 0.8212
-stage 2 avg AP = 0.7930
-stage 3 matrix avg AP = 0.6515
-stage 3 StyleGAN2 AP = 0.4771
-verdict = valid but negative; online-router code removed from current path
-```
-
-The best deleted non-oracle aggregation diagnostic was:
-
-```text
-run = caid10inc_rine_residual_calibmean_addbase_v2_augbase100k_balprior_s1_20260624
-eval_mode = calibrated_mean
-add_base = true
-residual_scale = 0.2
-stage 2 matrix avg AP = 0.8409
-stage 3 matrix avg AP = 0.7581
-stage 3 StyleGAN2 AP = 0.5537
-stage 10 matrix avg AP = 0.6691
-stage 10 matrix avg AUC = 0.6766
-weak final slices = DeepFakes 0.5531 AP, StyleGAN2 0.5083 AP, SD1.5 0.4735 AP, SDXL-base 0.5601 AP, FLUX.1 0.5413 AP, GPT-Image-1 0.5731 AP
-verdict = valid, improves early/mid-stage stability, but not a 0.9 final-AP route
-```
-
-Deleted shared online binary-head diagnostics:
-
-```text
-run = caid10inc_rine_residual_sharedonline_replay10k_augbase100k_balprior_s1_20260624
-eval_mode = shared_online
-head = random linear
-replay = 10k online feature replay, replay batch 128
-add_base = true
-stage 3 matrix avg AP = 0.7418
-stage 3 StyleGAN2 AP = 0.5487
-stage 5 stream avg AP = 0.7544
-verdict = valid but weaker than calibrated_mean+add_base; stopped early
-```
-
-```text
-run = caid10inc_rine_residual_sharedonline_lowrankinit_basereplay5k_replay20k_s1_20260624
-eval_mode = shared_online
-head = lowrank initialized from base head
-replay = 5k base-stage train feature seed + 20k online feature replay
-add_base = false
-stage 1 matrix avg AP = 0.4723
-stage 1 ProGAN AP = 0.3072, AUC = 0.0044
-verdict = valid but failed immediately; stopped early
-```
-
-Negative aggregation checks:
-
-| Run | Last checked stage | Avg AP | Baseline at same stage | Notes |
-| --- | ---: | ---: | ---: | --- |
-| `caid10inc_rine_residual_maxfake_augbase100k_balprior_s1_20260623` | 3 | 0.6623 | n/a | Valid `max_fake`; stage 2 reached 0.8234, but StyleGAN2 current AP fell to 0.4831 at stage 3. |
-| `caid10inc_rine_residual_maxconf_augbase100k_balprior_s1_20260623` | 3 | 0.6634 | 0.6623 | Valid `max_confidence`; stage 1 improved to 0.8129 but stage 3 still collapsed. |
-| `caid10inc_rine_residual_protorouter_augbase100k_balprior_s1_20260623b` | 3 | 0.7166 | n/a | Pure feature-prototype router; task-agnostic, but DeepFakes and stage-3 average AP dropped. |
-| `caid10inc_rine_residual_protodet_augbase100k_balprior_s1_20260623` | 2 | 0.6411 | 0.8234 | Direct binary prototype detector; stage 1 AP 0.7200 and stage 2 AP 0.6411, stopped early. |
-| `caid10inc_rine_residual_memoryknn20k_k50_augbase100k_balprior_s1_20260623` | 1 | 0.7150 | 0.7924 | Online binary feature-memory kNN; DeepFakes current AP 0.4317, stopped early. |
-| `caid10inc_rineside_gauss_stats100k_logmeanexp_s1_20260623` | 3 | 0.6899 | 0.6623 | Pure online Gaussian/prototypical stats with 100k base samples; valid but still weak, StyleGAN2 AP 0.5697. |
-| `caid10inc_rine_residual_independent_calibmax_augbase100k_balprior_s1_20260623` | 3 | 0.6629 | n/a | Centered `calibrated_max`; task-agnostic, stopped early because it was clearly weak. |
-| `caid10inc_rine_residual_independent_centeredmax_rank16_step2_loadbase_s1_20260623` | 2 | 0.7167 | 0.7300 | Centered `calibrated_max` under the older reusable-base setup; stopped early. |
-| `caid10inc_rine_residual_independent_calibmax_rank16_step2_loadbase_s1_20260623` | 4 | about 0.62 | 0.7313 | Quality-weighted calibrated max; stopped early. |
-
-Remote runs should use a single seed by default. Multi-seed runs are reserved
-for final paper tables after the method and stream setting are selected. Current
-RINE rescue runs explicitly override the framework YAML defaults:
-
-```text
-base_stage_epochs = 2
-load_base_checkpoint = run_logs/base_checkpoints_aug/base_rine_residual_vit_base_patch16_224_model_appearance_order_protocol_10inc_seed1_stage0_epochs2.pt
 backbone = vit_base_patch16_224
 optimizer = adamw
 scheduler = cosine
@@ -608,249 +129,366 @@ lr = 0.001
 online_iter = 1
 batchsize = 16
 eval_interval = 20000
-seeds = 1
-method = rine_residual
-stage_blurry_n = 100
-stage_blurry_m = 0
+seed = 1 for exploratory runs
 ```
 
-### Legacy CAID-10inc DualPrompt Big-Prompt Diagnostic
-
-Launched on `A6000` on 2026-06-23 CST. This is an exploratory rescue run for
-DualPrompt base-stage underfitting on the short `CAID-10inc` main-blurry
-protocol. It is not part of the common paper setup because it uses a different
-base-stage budget, larger prompt capacity, no AutoAugment, and a higher
-learning rate.
-
-Run identity:
-
-```text
-method = dualprompt
-protocol = protocol_presets/caidbench/model_appearance_order_protocol_10inc.yaml
-stream = main blurry, n=50, m=20, leakage=10%
-seed = 1
-machine = A6000
-pid_at_launch = 2660435
-swanlab = https://swanlab.cn/@iamwan/ocl4aid/runs/3c3f0vq5q9mw83yt1r1r8
-train_log = /home/home/yabin/ocl4aid/run_logs/caid10inc_dualprompt_s1_bigprompt_savebase_e110_le50_lr5e3_b2/seed_1_train.log
-launch_log = /home/home/yabin/ocl4aid/run_logs/caid10inc_dualprompt_s1_bigprompt_savebase_e110_le50_lr5e3_b2_20260623_230005.log
-```
-
-Confirmed configuration from the launch log:
+Current fast development setup:
 
 ```text
 base_stage_epochs = 2
-save_base_checkpoint = true
-base_checkpoint_dir = /home/home/yabin/ocl4aid/run_logs/base_checkpoints
-batchsize = 16
-online_iter = 1
-eval_interval = 20000
-n_worker = 24
-lr = 0.005
-transforms = []
-no_batchmask = true
-e_pool = 110
-len_g_prompt = 20
-len_e_prompt = 50
-pos_g_prompt = [0, 1]
-pos_e_prompt = [2, 3, 4, 5, 6, 7, 8, 9]
-total_parameters = 119707394
-learnable_parameters = 33908738
-```
-
-Expected base checkpoint path after base stage finishes:
-
-```text
-/home/home/yabin/ocl4aid/run_logs/base_checkpoints/base_dualprompt_vit_base_patch16_224_model_appearance_order_protocol_10inc_seed1_stage0_epochs2.pt
-```
-
-Exact launch command, with the SwanLab API key intentionally redacted:
-
-```bash
-cd /home/home/yabin/ocl4aid
-
-export SWANLAB_API_KEY="<redacted>"
-export CUDA_VISIBLE_DEVICES=0
-export PYTHONUNBUFFERED=1
-
-/home/home/yabin/miniconda3/envs/cl/bin/python main.py \
-  --config configs/framework/caidbench_10inc_mainblurry_fastbase.yaml \
-  --method dualprompt \
-  --caidbench_data_dir /home/home/yabin/CAIDBench \
-  --base_checkpoint_dir /home/home/yabin/ocl4aid/run_logs/base_checkpoints \
-  --swanlab \
-  --swanlab_experiment_name caid10inc-dualprompt-s1-bigprompt-savebase-e110-le50-lr5e3-b2 \
-  --swanlab_tags caid10inc mainblurry dualprompt bigprompt savebase e110 le50 lr5e3 b2 noautoaug \
-  --log_path /home/home/yabin/ocl4aid/run_logs \
-  --note caid10inc_dualprompt_s1_bigprompt_savebase_e110_le50_lr5e3_b2
-```
-
-Current A6000 SPrompt run configuration:
-
-```text
-method = sprompt
-stream = main blurry
 stage_blurry_n = 50
 stage_blurry_m = 20
+actual leakage = 10%
+transforms = []
+batch_mask = false
+load_base_checkpoint = auto when a matching ProGAN base checkpoint exists
+```
+
+Final paper setup should rerun selected rows with:
+
+```text
 base_stage_epochs = 10
-backbone = vit_base_patch16_224
-pretraining = ImageNet-21k ViT-B/16, ViT-B_16.npz
-seed = 1
-batchsize = 16
-online_iter = 1
-eval_interval = 20000
-n_worker = 8
-base_checkpoint_args = --save_base_checkpoint --base_checkpoint_dir /home/home/yabin/ocl4aid/run_logs/base_checkpoints
+transforms = [autoaug]
+batch_mask = true
+seeds = 1 2 3
 ```
 
-The older CAID experiment logs were moved into per-machine
-`run_logs/_archive_before_base_reuse_<timestamp>/` directories before launching
-this run. The A6000-to-4090-1 CAIDBench rsync transfer was not stopped and is
-not part of this experiment plan.
+Do not mix fastbase and final-base results in the same table.
 
-Current machine assignment and status:
+## Proposed Method
 
-| Machine | Stream setting | Plan id | Remote commit | Data root | Status |
-| --- | --- | --- | --- | --- | --- |
-| `4090-2` | Main blurry, `n=50,m=20`, leakage 10% | `mbrpfix0620` | `78fcf03` | `/home/yabin/CAIDBench` | running single-seed `ranpac` |
-| `A6000` | Main blurry, `n=50,m=20`, leakage 10% | `sprompt_mainblurry_base10_s1_20260620` | latest `main` | `/home/home/yabin/CAIDBench` | planned single-seed `sprompt` run |
-
-Launcher script:
+The current proposed method is:
 
 ```text
-scripts/launch_caid_experiment_queue.sh
+RIGEv2: Residual Incremental Gaussian Experts v2
 ```
 
-Legacy base-5 main blurry logs and base checkpoints on `4090-2`:
+Implementation:
 
 ```text
-/home/yabin/ocl4aid/run_logs/caid_mainblurry_baseckpt_core_s1to3_20260618/
-/home/yabin/ocl4aid/run_logs/caid_mainblurry_<method>_base5_s1-2-3_78fcf03/
-/home/yabin/ocl4aid/run_logs/base_checkpoints/
+method = rigev2
+model = rigev2
+config = configs/methods/rigev2.yaml
 ```
 
-A6000 SPrompt main blurry logs and base checkpoints:
+Final V2 design:
+
+- Train a supervised ProGAN base detector in the raw feature space.
+- Select a fixed subset of online features from the trained base head weights.
+- Store and replay only the selected feature subset.
+- Train per-stage residual low-rank expert heads with replay.
+- Route inference using feature-Gaussian expert statistics.
+- Keep all training labels binary.
+
+Current default V2 hyperparameters:
 
 ```text
-/home/home/yabin/ocl4aid/run_logs/sprompt_mainblurry_base10_s1_20260620/
-/home/home/yabin/ocl4aid/run_logs/caid_mainblurry_sprompt_base10_s1_<commit>/
-/home/home/yabin/ocl4aid/run_logs/base_checkpoints/
+rigev2_feature_layers = quartile
+rigev2_online_feature_layers = same
+rigev2_replay_dim = 1536
+rigev2_feature_block_dim = 768
+rigev2_head_type = lowrank
+rigev2_online_head_type = lowrank
+rigev2_rank = 16
+rigev2_online_rank = 4
+rigev2_eval_mode = feature_gaussian
+rigev2_inner_steps = 5
+rigev2_replay_window = 8192
+rigev2_replay_batch_size = 128
 ```
 
-Reusable base checkpoint filename pattern:
+The `rigev2_replay_dim=1536` setting is the current final default. A more
+compressed 768-dim setting can still be run with `--rigev2_replay_dim 768`, but
+it is an ablation row, not the default method.
+
+## Baselines
+
+Main comparison baselines:
 
 ```text
-base_<method>_vit_base_patch16_224_model_appearance_order_protocol_seed<seed>_stage0_epochs10.pt
+l2p
+dualprompt
+codaprompt
+flyprompt
+ranpac
 ```
 
-Future same-machine stream runs can reuse the saved base with:
+The proposed row is `rigev2`. `RIGEv1` is not a main baseline row; keep it only
+as an internal ablation/storage reference for explaining what V2 changes.
 
-```bash
---load_base_checkpoint auto --base_checkpoint_dir <machine>/run_logs/base_checkpoints
-```
-
-Monitoring commands:
-
-```bash
-ssh 4090-2 "tail -n 80 /home/yabin/ocl4aid/run_logs/caid_mainblurry_baseckpt_core_s1to3_20260618/launcher.log"
-ssh A6000 "tail -n 80 /home/home/yabin/ocl4aid/run_logs/sprompt_mainblurry_base10_s1_20260620/launcher.log"
-ssh 4090-2 "find /home/yabin/ocl4aid/run_logs/base_checkpoints -maxdepth 1 -type f -name '*.pt' | sort"
-ssh A6000 "find /home/home/yabin/ocl4aid/run_logs/base_checkpoints -maxdepth 1 -type f -name '*.pt' | sort"
-```
-
-After these queues finish, run the remaining planned stream-strength settings
-for the same core methods:
+Additional rows when they have complete, validated results:
 
 ```text
-Mild blurry    n=50, m=10, leakage=5%
-Strong blurry  n=50, m=40, leakage=20%
+sprompt
+singleprompt
+sdlora
+mvp
+hide
+norga
+hide_lora
+hide_adapter
 ```
 
-Then expand to the additional methods and seeds only after the core-method
-results are stable.
+Treat `slca` as invalid until its implementation is verified as a real SLCA
+classifier-alignment method for this binary CAID setting. Do not use any method
+variant that requires oracle protocol-stage routing at evaluation.
 
-## Run Count
+## Metrics
 
-Core-method development run:
+Primary reported metrics:
 
 ```text
-4 stream settings x 6 core methods x 3 seeds = 72 runs
+final_avg_ap
+final_avg_auc
+final_avg_accuracy
+final_avg_f1
+final_ap_forgetting
+mean_plasticity_ap
 ```
 
-Core-method final run:
+For online curves, plot:
 
 ```text
-4 stream settings x 6 core methods x 5 seeds = 120 runs
+x-axis = online_sample
+y-axis = seen average AP
 ```
 
-Complete final run:
+Seen average AP means average AP over generators whose stages have already
+appeared by that point. This avoids letting future unseen generators dominate
+the curve.
+
+Also keep the final full matrix for per-generator diagnosis:
 
 ```text
-4 stream settings x 14 methods x 5 seeds = 280 runs
+protocol_matrix.metrics.ap
+protocol_matrix.metrics.auc
+protocol_matrix.metrics.accuracy
+protocol_matrix.metrics.f1
 ```
 
-Recommended execution order:
+## Current Single-Seed Snapshot
 
-1. Run `Main blurry` and `Hard control` with core methods and 3 seeds.
-2. If results are stable, expand `Main blurry` to all methods and 5 seeds.
-3. Run `Mild blurry` and `Strong blurry` for core methods.
-4. Expand `Mild blurry` and `Strong blurry` to all methods only if compute
-   allows.
-5. Generate online curves and per-generator appendix results from completed
-   runs.
+These are exploratory `Representative10` single-seed results. They are useful
+for method selection and ablation, not final four-protocol paper claims.
 
-## Example Commands
+| Method / Variant | Protocol | Replay dim | Final Avg AP ↑ | Final Avg Acc ↑ | Notes |
+| --- | --- | ---: | ---: | ---: | --- |
+| RIGEv1 | Representative10 | 3072 | 0.902430 | 0.826545 | Full feature replay. |
+| RIGEv2 | Representative10 | 1536 | 0.905592 | 0.825409 | Current default V2; head-weight selected features. |
+| RIGEv2 | Representative10 | 768 | pending | pending | 1/4 feature storage ablation; do not treat as default. |
 
-Precompute reusable base:
+The current V2 is intended to preserve RIGEv1-level performance while reducing
+the replay feature footprint by half.
+
+## Required Experiments
+
+### 1. Four-Protocol Main Comparison
+
+Run the main comparison set under all four protocols:
+
+```text
+Representative10 = model_appearance_order_protocol_representative10.yaml
+Representative20 = model_appearance_order_protocol_representative20.yaml
+Representative30 = model_appearance_order_protocol_representative30.yaml
+CAID-50          = model_appearance_order_protocol_50.yaml
+base_stage_epochs = 2 for fast development
+stage_blurry_n = 50
+stage_blurry_m = 20
+actual leakage = 10%
+```
+
+Required rows:
+
+```text
+l2p, dualprompt, codaprompt, flyprompt, ranpac, rigev2
+```
+
+Report final average AP/AUC/accuracy/F1 and AP forgetting. Plot seen average AP
+curves for the same rows. `Representative10` should finish first and drive
+rapid debugging, but the main paper comparison is the full set of 10/20/30/50
+protocols.
+
+### 2. RIGEv2 Ablation
+
+Run on `Representative10` main blurry:
+
+| Variant | Change |
+| --- | --- |
+| RIGEv2 default | `rigev2_replay_dim=1536` |
+| RIGEv2-768 | `--rigev2_replay_dim 768` |
+| RIGEv1 | no feature compression |
+| no replay | set replay window/batch to 0 if supported |
+| hard stream | `stage_blurry_n=100, stage_blurry_m=0` |
+
+Run the V2 ablation on `Representative10` first. If the 1536-dim default remains
+the best tradeoff, carry only the default V2 into Representative20,
+Representative30, and CAID-50. The key question is whether feature compression
+keeps current-stage fitting and final seen-generator AP close to RIGEv1 while
+reducing stored feature memory.
+
+### 3. Final Paper Reruns
+
+For selected methods only:
+
+```text
+base_stage_epochs = 10
+transforms = [autoaug]
+batch_mask = true
+seeds = 1 2 3
+```
+
+Use these final reruns for any paper table that claims mean/std.
+
+## Table Templates
+
+### Table 1. Four-Protocol Main Results
+
+Primary table. Fill single-seed values during exploration and `mean ± std`
+after final reruns.
+
+| Method | Rep10 AP ↑ | Rep20 AP ↑ | Rep30 AP ↑ | CAID-50 AP ↑ | Rep10 Acc ↑ | Rep20 Acc ↑ | Rep30 Acc ↑ | CAID-50 Acc ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| L2P |  |  |  |  |  |  |  |  |
+| DualPrompt |  |  |  |  |  |  |  |  |
+| CodaPrompt |  |  |  |  |  |  |  |  |
+| FlyPrompt |  |  |  |  |  |  |  |  |
+| RanPAC |  |  |  |  |  |  |  |  |
+| RIGEv2 | 0.905592 |  |  |  | 0.825409 |  |  |  |
+
+### Table 1b. Four-Protocol Detailed Metrics
+
+Use this table when space allows, or put it in the appendix.
+
+| Protocol | Method | Final Avg AP ↑ | Final Avg AUC ↑ | Final Avg Acc ↑ | Final Avg F1 ↑ | AP Forgetting ↓ | AP Plasticity ↑ |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Rep10 | L2P |  |  |  |  |  |  |
+| Rep10 | DualPrompt |  |  |  |  |  |  |
+| Rep10 | CodaPrompt |  |  |  |  |  |  |
+| Rep10 | FlyPrompt |  |  |  |  |  |  |
+| Rep10 | RanPAC |  |  |  |  |  |  |
+| Rep10 | RIGEv2 | 0.905592 |  | 0.825409 |  |  |  |
+| Rep20 | L2P |  |  |  |  |  |  |
+| Rep20 | DualPrompt |  |  |  |  |  |  |
+| Rep20 | CodaPrompt |  |  |  |  |  |  |
+| Rep20 | FlyPrompt |  |  |  |  |  |  |
+| Rep20 | RanPAC |  |  |  |  |  |  |
+| Rep20 | RIGEv2 |  |  |  |  |  |  |
+| Rep30 | L2P |  |  |  |  |  |  |
+| Rep30 | DualPrompt |  |  |  |  |  |  |
+| Rep30 | CodaPrompt |  |  |  |  |  |  |
+| Rep30 | FlyPrompt |  |  |  |  |  |  |
+| Rep30 | RanPAC |  |  |  |  |  |  |
+| Rep30 | RIGEv2 |  |  |  |  |  |  |
+| CAID-50 | L2P |  |  |  |  |  |  |
+| CAID-50 | DualPrompt |  |  |  |  |  |  |
+| CAID-50 | CodaPrompt |  |  |  |  |  |  |
+| CAID-50 | FlyPrompt |  |  |  |  |  |  |
+| CAID-50 | RanPAC |  |  |  |  |  |  |
+| CAID-50 | RIGEv2 |  |  |  |  |  |  |
+
+### Table 2. Seen Average AP Curve Summary
+
+Fill from `stream_metrics`. Make one curve/table per protocol. The columns
+below match Representative10; for Representative20/30/50, extend the same
+pattern to their final stage.
+
+| Method | Stage 2 AP ↑ | Stage 4 AP ↑ | Stage 6 AP ↑ | Stage 8 AP ↑ | Stage 10 AP ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| L2P |  |  |  |  |  |
+| DualPrompt |  |  |  |  |  |
+| CodaPrompt |  |  |  |  |  |
+| FlyPrompt |  |  |  |  |  |
+| RanPAC |  |  |  |  |  |
+| RIGEv2 |  |  |  |  |  |
+
+### Table 3. RIGEv2 Storage/Accuracy Ablation
+
+| Variant | Stored feature dim | Replay window | Final Avg AP ↑ | Final Avg Acc ↑ | Relative storage |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| RIGEv1 | 3072 | 8192 | 0.902430 | 0.826545 | 1.00x |
+| RIGEv2-1536 | 1536 | 8192 | 0.905592 | 0.825409 | 0.50x |
+| RIGEv2-768 | 768 | 8192 | pending | pending | 0.25x |
+
+### Table 4. Per-Generator Final AP
+
+Fill one row per generator from the final stage of
+`protocol_matrix.metrics.ap`.
+
+| Generator | L2P | DualPrompt | CodaPrompt | FlyPrompt | RanPAC | RIGEv2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| ProGAN |  |  |  |  |  |  |
+| Pluralistic |  |  |  |  |  |  |
+| LaMa |  |  |  |  |  |  |
+| VQDM |  |  |  |  |  |  |
+| GLIDE |  |  |  |  |  |  |
+| Wukong |  |  |  |  |  |  |
+| Midjourney v5 |  |  |  |  |  |  |
+| RDDM |  |  |  |  |  |  |
+| Playground |  |  |  |  |  |  |
+| LaVi-Bridge |  |  |  |  |  |  |
+| infinity |  |  |  |  |  |  |
+
+## Command Templates
+
+For the four main protocols, replace `<protocol_yaml>` with one of:
+
+```text
+protocol_presets/caidbench/model_appearance_order_protocol_representative10.yaml
+protocol_presets/caidbench/model_appearance_order_protocol_representative20.yaml
+protocol_presets/caidbench/model_appearance_order_protocol_representative30.yaml
+protocol_presets/caidbench/model_appearance_order_protocol_50.yaml
+```
+
+Use note/group suffixes such as `rep10`, `rep20`, `rep30`, and `caid50` so
+result directories remain separable.
+
+### Local / Generic RIGEv2 Four-Protocol Template
+
+First run, train and save the ProGAN base stage:
 
 ```bash
 python3 main.py \
-  --config configs/framework/caidbench_50_hard.yaml \
-  --method flyprompt \
+  --config configs/framework/caidbench.yaml \
+  --method rigev2 \
   --caidbench_data_dir /path/to/CAIDBench \
+  --caidbench_protocol <protocol_yaml> \
+  --base_stage_epochs 2 \
+  --stage_blurry_n 50 \
+  --stage_blurry_m 20 \
+  --transforms \
+  --no_batchmask \
+  --batchsize 16 \
+  --online_iter 1 \
+  --eval_interval 20000 \
   --save_base_checkpoint \
-  --base_checkpoint_only \
+  --note rep10_rigev2_s1 \
   --no_swanlab
 ```
 
-Main blurry:
+Reuse an existing matching ProGAN base checkpoint:
 
 ```bash
 python3 main.py \
-  --config configs/framework/caidbench_50_mainblurry.yaml \
-  --method flyprompt \
+  --config configs/framework/caidbench.yaml \
+  --method rigev2 \
   --caidbench_data_dir /path/to/CAIDBench \
+  --caidbench_protocol <protocol_yaml> \
+  --base_stage_epochs 2 \
+  --stage_blurry_n 50 \
+  --stage_blurry_m 20 \
+  --transforms \
+  --no_batchmask \
+  --batchsize 16 \
+  --online_iter 1 \
+  --eval_interval 20000 \
   --load_base_checkpoint auto \
-  --note flyprompt_base10_blurry10 \
+  --note rep10_rigev2_s1_loadbase \
   --no_swanlab
 ```
 
-Hard control:
+### VirtAI RIGEv2 Four-Protocol Template
 
-```bash
-python3 main.py \
-  --config configs/framework/caidbench_50_hard.yaml \
-  --method flyprompt \
-  --caidbench_data_dir /path/to/CAIDBench \
-  --load_base_checkpoint auto \
-  --note flyprompt_base10_hard \
-  --no_swanlab
-```
-
-Final paper seeds:
-
-```bash
-python3 main.py \
-  --config configs/framework/caidbench_50_mainblurry.yaml \
-  --method flyprompt \
-  --caidbench_data_dir /path/to/CAIDBench \
-  --seeds 1 2 3 4 5 \
-  --load_base_checkpoint auto \
-  --note flyprompt_base10_blurry10_s5 \
-  --no_swanlab
-```
-
-VirtAI CAID-AIGC10 cloud launch template:
+First run, train and save the ProGAN base stage:
 
 ```bash
 cd /gemini/code/ocl4aid
@@ -859,24 +497,124 @@ ls -lh checkpoints/ViT-B_16.npz
 nvidia-smi
 
 python main.py \
-  --config configs/framework/caidbench_aigc10_mainblurry.yaml \
-  --method flyprompt \
+  --config configs/framework/caidbench.yaml \
+  --method rigev2 \
   --caidbench_data_dir /gemini/data-1/CAIDBench \
-  --log_path /gemini/output/ocl4aid_logs \
+  --caidbench_protocol <protocol_yaml> \
+  --base_stage_epochs 2 \
+  --stage_blurry_n 50 \
+  --stage_blurry_m 20 \
+  --transforms \
+  --no_batchmask \
+  --batchsize 16 \
+  --online_iter 1 \
+  --eval_interval 20000 \
+  --n_worker 8 \
+  --save_base_checkpoint \
   --swanlab \
-  --swanlab_experiment_name caid-aigc10-flyprompt-s1 \
-  --note caid_aigc10_flyprompt_s1
+  --swanlab_project CAIDBench \
+  --swanlab_mode cloud \
+  --swanlab_group <protocol_tag>-mainblurry \
+  --swanlab_experiment_name <protocol_tag>-rigev2-s1 \
+  --swanlab_tags <protocol_tag> mainblurry rigev2 \
+  --log_path /gemini/output/ocl4aid_logs \
+  --note <protocol_tag>_rigev2_s1
 ```
 
-For fast diagnostic reruns, switch only the framework preset:
+Reuse an existing matching base checkpoint:
+
+```bash
+cd /gemini/code/ocl4aid
+export SWANLAB_API_KEY="<redacted>"
+ls -lh checkpoints/ViT-B_16.npz
+nvidia-smi
+
+python main.py \
+  --config configs/framework/caidbench.yaml \
+  --method rigev2 \
+  --caidbench_data_dir /gemini/data-1/CAIDBench \
+  --caidbench_protocol <protocol_yaml> \
+  --base_stage_epochs 2 \
+  --stage_blurry_n 50 \
+  --stage_blurry_m 20 \
+  --transforms \
+  --no_batchmask \
+  --batchsize 16 \
+  --online_iter 1 \
+  --eval_interval 20000 \
+  --n_worker 8 \
+  --load_base_checkpoint auto \
+  --swanlab \
+  --swanlab_project CAIDBench \
+  --swanlab_mode cloud \
+  --swanlab_group <protocol_tag>-mainblurry \
+  --swanlab_experiment_name <protocol_tag>-rigev2-s1-loadbase \
+  --swanlab_tags <protocol_tag> mainblurry rigev2 loadbase \
+  --log_path /gemini/output/ocl4aid_logs \
+  --note <protocol_tag>_rigev2_s1_loadbase
+```
+
+### Baseline Template
+
+Replace `<method>` with `l2p`, `dualprompt`, `codaprompt`, `flyprompt`,
+or `ranpac`.
 
 ```bash
 python main.py \
-  --config configs/framework/caidbench_aigc10_mainblurry_fastbase.yaml \
-  --method dualprompt \
+  --config configs/framework/caidbench.yaml \
+  --method <method> \
   --caidbench_data_dir /gemini/data-1/CAIDBench \
-  --log_path /gemini/output/ocl4aid_logs \
+  --caidbench_protocol <protocol_yaml> \
+  --base_stage_epochs 2 \
+  --stage_blurry_n 50 \
+  --stage_blurry_m 20 \
+  --transforms \
+  --no_batchmask \
+  --batchsize 16 \
+  --online_iter 1 \
+  --eval_interval 20000 \
+  --n_worker 8 \
+  --save_base_checkpoint \
   --swanlab \
-  --swanlab_experiment_name caid-aigc10-dualprompt-s1 \
-  --note caid_aigc10_dualprompt_s1
+  --swanlab_project CAIDBench \
+  --swanlab_mode cloud \
+  --swanlab_group <protocol_tag>-mainblurry \
+  --swanlab_experiment_name <protocol_tag>-<method>-s1 \
+  --swanlab_tags <protocol_tag> mainblurry <method> \
+  --log_path /gemini/output/ocl4aid_logs \
+  --note <protocol_tag>_<method>_s1
 ```
+
+Method-specific overrides:
+
+```text
+codaprompt: add --e_pool 110
+dualprompt: add --lr 0.005 --e_pool 110 --len_g_prompt 20 --len_e_prompt 50 --pos_e_prompt 2 3 4 5 6 7 8 9
+ranpac: add --ranpac_M 4096
+rigev2-768 ablation: add --rigev2_replay_dim 768
+```
+
+## Result Files
+
+Each completed seed writes:
+
+```text
+<log_path>/<method>/seed_<seed>_ocl_metrics.json
+```
+
+Use:
+
+```text
+final_summary
+metrics
+protocol_matrix
+stage_metrics
+stream_metrics
+```
+
+For paper tables, extract from `final_summary`. For curves, extract from
+`stream_metrics`. For per-generator diagnosis, extract from `protocol_matrix`
+at the final stage.
+
+Do not commit datasets, checkpoints, SwanLab logs, run logs, or archived result
+bundles.
