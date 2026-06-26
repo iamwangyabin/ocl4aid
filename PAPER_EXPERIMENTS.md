@@ -210,6 +210,7 @@ l2p
 dualprompt
 codaprompt
 flyprompt
+online_lora
 ranpac
 ```
 
@@ -300,7 +301,7 @@ actual leakage = 10%
 Required rows:
 
 ```text
-l2p, dualprompt, codaprompt, flyprompt, ranpac, rigev2
+l2p, dualprompt, codaprompt, flyprompt, online_lora, ranpac, rigev2
 ```
 
 Report final average AP/AUC/accuracy/F1 and AP forgetting. Plot seen average AP
@@ -365,24 +366,28 @@ Use this table when space allows, or put it in the appendix.
 | Representative10 | DualPrompt |  |  |  |  |  |  |
 | Representative10 | CodaPrompt |  |  |  |  |  |  |
 | Representative10 | FlyPrompt |  |  |  |  |  |  |
+| Representative10 | Online-LoRA |  |  |  |  |  |  |
 | Representative10 | RanPAC |  |  |  |  |  |  |
 | Representative10 | RIGEv2 | 0.905592 |  | 0.825409 |  |  |  |
 | Representative20 | L2P |  |  |  |  |  |  |
 | Representative20 | DualPrompt |  |  |  |  |  |  |
 | Representative20 | CodaPrompt |  |  |  |  |  |  |
 | Representative20 | FlyPrompt |  |  |  |  |  |  |
+| Representative20 | Online-LoRA |  |  |  |  |  |  |
 | Representative20 | RanPAC |  |  |  |  |  |  |
 | Representative20 | RIGEv2 |  |  |  |  |  |  |
 | Representative30 | L2P |  |  |  |  |  |  |
 | Representative30 | DualPrompt |  |  |  |  |  |  |
 | Representative30 | CodaPrompt |  |  |  |  |  |  |
 | Representative30 | FlyPrompt |  |  |  |  |  |  |
+| Representative30 | Online-LoRA |  |  |  |  |  |  |
 | Representative30 | RanPAC |  |  |  |  |  |  |
 | Representative30 | RIGEv2 |  |  |  |  |  |  |
 | Representative50 | L2P |  |  |  |  |  |  |
 | Representative50 | DualPrompt |  |  |  |  |  |  |
 | Representative50 | CodaPrompt |  |  |  |  |  |  |
 | Representative50 | FlyPrompt |  |  |  |  |  |  |
+| Representative50 | Online-LoRA |  |  |  |  |  |  |
 | Representative50 | RanPAC |  |  |  |  |  |  |
 | Representative50 | RIGEv2 |  |  |  |  |  |  |
 
@@ -557,7 +562,7 @@ python main.py \
 ### Baseline Template
 
 Replace `<method>` with `l2p`, `dualprompt`, `codaprompt`, `flyprompt`,
-or `ranpac`.
+`online_lora`, or `ranpac`.
 
 ```bash
 python main.py \

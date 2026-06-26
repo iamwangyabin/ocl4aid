@@ -6,6 +6,7 @@ from .mvp import MVP
 from .ranpac import RanPAC
 from .slca import SLCA
 from .hide_norga_trainer import HiDeGCLTrainer, NoRGaGCLTrainer
+from .online_lora import OnlineLoRA
 from .sdlora import SDLoRAGCL
 from .singleprompt import SinglePromptTrainer
 from .sprompt import SPrompt as SPromptTrainer
@@ -25,6 +26,7 @@ METHODS = {
     "hide_lora": HiDeGCLTrainer,
     "hide_adapter": HiDeGCLTrainer,
     "norga": NoRGaGCLTrainer,
+    "online_lora": OnlineLoRA,
     "sdlora": SDLoRAGCL,
     "singleprompt": SinglePromptTrainer,
     "sprompt": SPromptTrainer,

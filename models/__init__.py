@@ -7,6 +7,7 @@ from .ranpac import RanPAC
 from .hide_norga_prefix_vit import HiDePrefixModel, NoRGaPrefixModel
 from .hide_lora_vit import HiDeLoRAModel
 from .hide_adapter_vit import HiDeAdapterModel
+from .online_lora import OnlineLoRAModel
 from .sdlora import SDLoRAModel
 from .singleprompt import SinglePrompt
 from .sprompt import SPrompt
@@ -25,6 +26,7 @@ MODELS = {
     "hide_lora": HiDeLoRAModel,
     "hide_adapter": HiDeAdapterModel,
     "norga": NoRGaPrefixModel,
+    "online_lora": OnlineLoRAModel,
     "sdlora": SDLoRAModel,
     "singleprompt": SinglePrompt,
     "sprompt": SPrompt,

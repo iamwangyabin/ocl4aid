@@ -1,0 +1,11 @@
+# Online-LoRA defaults adapted to CAID binary online detection.
+opt_name: adamw
+lr: 0.0002
+online_lora_rank: 4
+online_lora_layers: all
+online_lora_mas_weight: 2000.0
+online_lora_loss_window: 20
+online_lora_loss_mean_threshold: 0.7
+online_lora_loss_variance_threshold: 0.02
+online_lora_hard_buffer_size: 64
+online_lora_importance_batch_size: 16
