@@ -15,7 +15,7 @@ experiments:
 | Representative10 | `protocol_presets/caidbench/model_appearance_order_protocol_representative10.yaml` | Fast main setting and ablation setting. |
 | Representative20 | `protocol_presets/caidbench/model_appearance_order_protocol_representative20.yaml` | Medium main setting. |
 | Representative30 | `protocol_presets/caidbench/model_appearance_order_protocol_representative30.yaml` | Large representative main setting. |
-| CAID-50 | `protocol_presets/caidbench/model_appearance_order_protocol_50.yaml` | Full long-horizon main setting. |
+| Representative50 | `protocol_presets/caidbench/model_appearance_order_protocol_representative50.yaml` | Full long-horizon main setting. |
 
 `Representative10` stage order:
 
@@ -98,7 +98,7 @@ Chroma
 
 The representative protocols were sampled from the generator pool using stable
 held-out test coverage and pooled-detector train/test behavior, then ordered by
-CAID model appearance order. `CAID-50` keeps the full long-horizon protocol.
+CAID model appearance order. `Representative50` keeps the full long-horizon protocol.
 
 ## Core Invariants
 
@@ -290,7 +290,7 @@ Run the main comparison set under all four protocols:
 Representative10 = model_appearance_order_protocol_representative10.yaml
 Representative20 = model_appearance_order_protocol_representative20.yaml
 Representative30 = model_appearance_order_protocol_representative30.yaml
-CAID-50          = model_appearance_order_protocol_50.yaml
+Representative50 = model_appearance_order_protocol_representative50.yaml
 base_stage_epochs = 2 for fast development
 stage_blurry_n = 50
 stage_blurry_m = 20
@@ -322,9 +322,9 @@ Run on `Representative10` main blurry:
 
 Run the V2 ablation on `Representative10` first. If the 1536-dim default remains
 the best tradeoff, carry only the default V2 into Representative20,
-Representative30, and CAID-50. The key question is whether feature compression
-keeps current-stage fitting and final seen-generator AP close to RIGEv1 while
-reducing stored feature memory.
+Representative30, and Representative50. The key question is whether feature
+compression keeps current-stage fitting and final seen-generator AP close to
+RIGEv1 while reducing stored feature memory.
 
 ### 3. Final Paper Reruns
 
@@ -346,7 +346,7 @@ Use these final reruns for any paper table that claims mean/std.
 Primary table. Fill single-seed values during exploration and `mean ± std`
 after final reruns.
 
-| Method | Rep10 AP ↑ | Rep20 AP ↑ | Rep30 AP ↑ | CAID-50 AP ↑ | Rep10 Acc ↑ | Rep20 Acc ↑ | Rep30 Acc ↑ | CAID-50 Acc ↑ |
+| Method | Rep10 AP ↑ | Rep20 AP ↑ | Rep30 AP ↑ | Rep50 AP ↑ | Rep10 Acc ↑ | Rep20 Acc ↑ | Rep30 Acc ↑ | Rep50 Acc ↑ |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | L2P |  |  |  |  |  |  |  |  |
 | DualPrompt |  |  |  |  |  |  |  |  |
@@ -361,30 +361,30 @@ Use this table when space allows, or put it in the appendix.
 
 | Protocol | Method | Final Avg AP ↑ | Final Avg AUC ↑ | Final Avg Acc ↑ | Final Avg F1 ↑ | AP Forgetting ↓ | AP Plasticity ↑ |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Rep10 | L2P |  |  |  |  |  |  |
-| Rep10 | DualPrompt |  |  |  |  |  |  |
-| Rep10 | CodaPrompt |  |  |  |  |  |  |
-| Rep10 | FlyPrompt |  |  |  |  |  |  |
-| Rep10 | RanPAC |  |  |  |  |  |  |
-| Rep10 | RIGEv2 | 0.905592 |  | 0.825409 |  |  |  |
-| Rep20 | L2P |  |  |  |  |  |  |
-| Rep20 | DualPrompt |  |  |  |  |  |  |
-| Rep20 | CodaPrompt |  |  |  |  |  |  |
-| Rep20 | FlyPrompt |  |  |  |  |  |  |
-| Rep20 | RanPAC |  |  |  |  |  |  |
-| Rep20 | RIGEv2 |  |  |  |  |  |  |
-| Rep30 | L2P |  |  |  |  |  |  |
-| Rep30 | DualPrompt |  |  |  |  |  |  |
-| Rep30 | CodaPrompt |  |  |  |  |  |  |
-| Rep30 | FlyPrompt |  |  |  |  |  |  |
-| Rep30 | RanPAC |  |  |  |  |  |  |
-| Rep30 | RIGEv2 |  |  |  |  |  |  |
-| CAID-50 | L2P |  |  |  |  |  |  |
-| CAID-50 | DualPrompt |  |  |  |  |  |  |
-| CAID-50 | CodaPrompt |  |  |  |  |  |  |
-| CAID-50 | FlyPrompt |  |  |  |  |  |  |
-| CAID-50 | RanPAC |  |  |  |  |  |  |
-| CAID-50 | RIGEv2 |  |  |  |  |  |  |
+| Representative10 | L2P |  |  |  |  |  |  |
+| Representative10 | DualPrompt |  |  |  |  |  |  |
+| Representative10 | CodaPrompt |  |  |  |  |  |  |
+| Representative10 | FlyPrompt |  |  |  |  |  |  |
+| Representative10 | RanPAC |  |  |  |  |  |  |
+| Representative10 | RIGEv2 | 0.905592 |  | 0.825409 |  |  |  |
+| Representative20 | L2P |  |  |  |  |  |  |
+| Representative20 | DualPrompt |  |  |  |  |  |  |
+| Representative20 | CodaPrompt |  |  |  |  |  |  |
+| Representative20 | FlyPrompt |  |  |  |  |  |  |
+| Representative20 | RanPAC |  |  |  |  |  |  |
+| Representative20 | RIGEv2 |  |  |  |  |  |  |
+| Representative30 | L2P |  |  |  |  |  |  |
+| Representative30 | DualPrompt |  |  |  |  |  |  |
+| Representative30 | CodaPrompt |  |  |  |  |  |  |
+| Representative30 | FlyPrompt |  |  |  |  |  |  |
+| Representative30 | RanPAC |  |  |  |  |  |  |
+| Representative30 | RIGEv2 |  |  |  |  |  |  |
+| Representative50 | L2P |  |  |  |  |  |  |
+| Representative50 | DualPrompt |  |  |  |  |  |  |
+| Representative50 | CodaPrompt |  |  |  |  |  |  |
+| Representative50 | FlyPrompt |  |  |  |  |  |  |
+| Representative50 | RanPAC |  |  |  |  |  |  |
+| Representative50 | RIGEv2 |  |  |  |  |  |  |
 
 ### Table 2. Seen Average AP Curve Summary
 
@@ -436,10 +436,10 @@ For the four main protocols, replace `<protocol_yaml>` with one of:
 protocol_presets/caidbench/model_appearance_order_protocol_representative10.yaml
 protocol_presets/caidbench/model_appearance_order_protocol_representative20.yaml
 protocol_presets/caidbench/model_appearance_order_protocol_representative30.yaml
-protocol_presets/caidbench/model_appearance_order_protocol_50.yaml
+protocol_presets/caidbench/model_appearance_order_protocol_representative50.yaml
 ```
 
-Use note/group suffixes such as `rep10`, `rep20`, `rep30`, and `caid50` so
+Use note/group suffixes such as `rep10`, `rep20`, `rep30`, and `rep50` so
 result directories remain separable.
 
 ### Local / Generic RIGEv2 Four-Protocol Template
