@@ -1450,6 +1450,7 @@ class _Trainer():
             "sdlora",
             "rineside_gauss",
             "rigev1",
+            "rigev2",
         }:
             return self.model(images) + self.mask
 

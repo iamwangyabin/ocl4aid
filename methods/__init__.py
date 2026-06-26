@@ -11,6 +11,7 @@ from .singleprompt import SinglePromptTrainer
 from .sprompt import SPrompt as SPromptTrainer
 from .rineside_gauss import RineSideGauss
 from .rigev1 import RIGEv1
+from .rigev2 import RIGEv2
 
 METHODS = {
     "codaprompt": CodaPrompt,
@@ -29,4 +30,5 @@ METHODS = {
     "sprompt": SPromptTrainer,
     "rineside_gauss": RineSideGauss,
     "rigev1": RIGEv1,
+    "rigev2": RIGEv2,
 }
