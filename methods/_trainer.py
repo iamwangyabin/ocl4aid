@@ -1445,6 +1445,7 @@ class _Trainer():
             "dualprompt",
             "mvp",
             "ranpac",
+            "online_lora",
             "singleprompt",
             "slca",
             "sdlora",
