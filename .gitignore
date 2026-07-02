@@ -35,3 +35,23 @@ run_logs/
 # Notebook and local Python runtime files
 .ipynb_checkpoints/
 .python-version
+
+# Generated documents and LaTeX build artifacts
+*.pdf
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+*.xdv
