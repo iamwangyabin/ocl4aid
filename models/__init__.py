@@ -11,7 +11,6 @@ from .online_lora import OnlineLoRAModel
 from .sdlora import SDLoRAModel
 from .singleprompt import SinglePrompt
 from .sprompt import SPrompt
-from .rineside_gauss import RineSideGauss
 from .rigev1 import RIGEv1
 from .rigev2 import RIGEv2
 
@@ -30,7 +29,6 @@ MODELS = {
     "sdlora": SDLoRAModel,
     "singleprompt": SinglePrompt,
     "sprompt": SPrompt,
-    "rineside_gauss": RineSideGauss,
     "rigev1": RIGEv1,
     "rigev2": RIGEv2,
 }

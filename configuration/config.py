@@ -251,7 +251,7 @@ def base_parser():
     parser.add_argument("--no_amp", dest="use_amp", action="store_false", help="Disable automatic mixed precision.")
     parser.add_argument("--n_worker", type=int, default=defaults.get("n_worker", 0), help="The number of workers")
     parser.add_argument("--batchsize", type=int, default=defaults.get("batchsize", 16),
-                        help="Global online batch size. In DDP it is split evenly across ranks.")
+                        help="Online exposure batch size. Training is single-process and single-GPU.")
     parser.add_argument("--lr", type=float, default=defaults.get("lr", 0.05), help="learning rate")
     parser.add_argument("--online_iter", type=float, default=defaults.get("online_iter", 1), help="number of model updates per samples seen.")
     parser.add_argument("--base_stage_epochs", type=int, default=defaults.get("base_stage_epochs", 1),

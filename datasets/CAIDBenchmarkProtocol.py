@@ -228,6 +228,7 @@ class CAIDBenchmarkProtocol(Dataset):
         self._arrow_paths = self.metadata["arrow_path"].astype(str).tolist()
         self._batch_ids = self.metadata["batch_id"].astype("int64").tolist()
         self._row_in_batch = self.metadata["row_in_batch"].astype("int64").tolist()
+        self.online_stage_targets = self.metadata["_online_stage_id"].astype("int64").tolist()
         self.targets = self.metadata["_target"].astype("int64").tolist()
         self.binary_targets = self.metadata["label"].astype("int64").tolist()
 

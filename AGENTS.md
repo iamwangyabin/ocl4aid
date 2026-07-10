@@ -66,9 +66,9 @@ python3 main.py \
   set to 0.
 - When the base stage is enabled, temporal stage blur must start after stage 0
   and must not leak samples into or out of the supervised base stage.
-- `batchsize` is the global online exposure batch size. In distributed training
-  it must be split evenly across ranks and must not be treated as a per-GPU
-  batch size.
+- `batchsize` is the online exposure batch size. The runner is intentionally
+  single-process and single-GPU; distributed launchers must fail fast rather
+  than shard the online stream or reinterpret the batch size.
 - `task_num` should match the number of protocol generator stages so
   prompt/expert methods can allocate per-task slots. This must not change the
   binary class labels exposed to training.

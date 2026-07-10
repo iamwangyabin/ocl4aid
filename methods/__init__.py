@@ -10,7 +10,6 @@ from .online_lora import OnlineLoRA
 from .sdlora import SDLoRAGCL
 from .singleprompt import SinglePromptTrainer
 from .sprompt import SPrompt as SPromptTrainer
-from .rineside_gauss import RineSideGauss
 from .rigev1 import RIGEv1
 from .rigev2 import RIGEv2
 
@@ -30,7 +29,6 @@ METHODS = {
     "sdlora": SDLoRAGCL,
     "singleprompt": SinglePromptTrainer,
     "sprompt": SPromptTrainer,
-    "rineside_gauss": RineSideGauss,
     "rigev1": RIGEv1,
     "rigev2": RIGEv2,
 }

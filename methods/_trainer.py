@@ -21,6 +21,7 @@ from torchvision import transforms
 from datasets import CAIDBenchmarkProtocol, ConditionalJPEGCompress, OnlineIterDataset, safe_collate_drop_bad
 from protocol_metrics import (
     DETECTION_METRICS,
+    PROTOCOL_METRICS_SCHEMA_VERSION,
     StageMetrics,
     build_protocol_metric_matrix,
     compute_binary_detection_metrics,
@@ -38,6 +39,49 @@ DATASET_NAME = "caidbench_protocol"
 CAIDBENCH_MEAN = (0.485, 0.456, 0.406)
 CAIDBENCH_STD = (0.229, 0.224, 0.225)
 CAIDBENCH_INPUT_SIZE = 224
+
+
+_DISTRIBUTED_WORLD_SIZE_ENV = (
+    "WORLD_SIZE",
+    "LOCAL_WORLD_SIZE",
+    "SLURM_NTASKS",
+    "OMPI_COMM_WORLD_SIZE",
+    "PMI_SIZE",
+)
+_DISTRIBUTED_RANK_ENV = (
+    "RANK",
+    "LOCAL_RANK",
+    "SLURM_PROCID",
+    "OMPI_COMM_WORLD_RANK",
+    "PMI_RANK",
+)
+
+
+def _distributed_launch_value(names, default):
+    values = []
+    for name in names:
+        raw = os.environ.get(name)
+        if raw in (None, ""):
+            continue
+        try:
+            values.append(int(raw))
+        except ValueError as exc:
+            raise ValueError(f"Environment variable {name} must be an integer, got {raw!r}") from exc
+    return max(values, default=default)
+
+
+def _ensure_single_process_launch():
+    requested_world_size = _distributed_launch_value(
+        _DISTRIBUTED_WORLD_SIZE_ENV,
+        1,
+    )
+    requested_rank = _distributed_launch_value(_DISTRIBUTED_RANK_ENV, 0)
+    if requested_world_size > 1 or requested_rank > 0:
+        raise RuntimeError(
+            "ocl4aid uses a single-process, single-GPU online stream. "
+            "Distributed launch was detected; run `python3 main.py ...` "
+            "with one visible GPU instead of torchrun/mpirun/srun multi-task."
+        )
 
 
 _LEARNER_KWARG_DENYLIST = {
@@ -109,30 +153,18 @@ class _Trainer():
         self._file_log_handler = None
         self.train_log_path = None
 
-        # Distributed training setup
+        # Online exposure semantics are intentionally single-process. Splitting
+        # one stream update across ranks changes both ordering and batch meaning.
         self.world_size = 1
-        self.ngpus_per_nodes = torch.cuda.device_count()
-        if self.ngpus_per_nodes == 0:
-            self.ngpus_per_nodes = 1
-        if "WORLD_SIZE" in os.environ and os.environ["WORLD_SIZE"] != '':
-            self.world_size  = int(os.environ["WORLD_SIZE"]) * self.ngpus_per_nodes
-        else:
-            self.world_size  = self.world_size * self.ngpus_per_nodes
+        self.ngpus_per_nodes = 1
+        _ensure_single_process_launch()
 
-        self.distributed = self.world_size > 1
+        self.distributed = False
         self.dist_backend = 'nccl'
         self.dist_url = 'env://'
         self.global_batchsize = int(self.batchsize)
         if self.global_batchsize <= 0:
             raise ValueError(f"--batchsize must be positive, got {self.global_batchsize}")
-        if self.distributed:
-            if self.global_batchsize % self.world_size != 0:
-                raise ValueError(
-                    "--batchsize is the global online batch size and must be "
-                    f"divisible by world_size={self.world_size}; got "
-                    f"{self.global_batchsize}."
-                )
-            self.batchsize = self.global_batchsize // self.world_size
         self.local_batchsize = int(self.batchsize)
 
         run_name = self.note or self.method or "run"
@@ -413,6 +445,7 @@ class _Trainer():
             stage_blurry_m=getattr(self, "stage_blurry_m", 0),
             stage_blurry_start_pos=1 if self._base_stage_enabled() else 0,
         )
+        self.protocol_exposure_by_generator = self._build_protocol_exposure_by_generator()
         self.train_dataloader = DataLoader(
             self.online_iter_dataset,
             batch_size=self.batchsize,
@@ -441,6 +474,109 @@ class _Trainer():
         if self._base_stage_enabled():
             return stage_ids[1:]
         return stage_ids
+
+    def _build_protocol_exposure_by_generator(self):
+        """Map each home generator to its actual first/last stream bucket."""
+        sampler_indices = getattr(self.train_sampler, "indices", {})
+        home_stage_ids = getattr(self.train_dataset, "online_stage_targets", [])
+        bounds = {
+            stage_id: {"first_stage_id": None, "last_stage_id": None}
+            for stage_id in range(len(self.protocol_generator_order))
+        }
+
+        for exposure_stage_id, indices in sampler_indices.items():
+            home_stages = set()
+            for index in indices:
+                if index < 0 or index >= len(home_stage_ids):
+                    raise IndexError(f"Protocol sampler index out of range: {index}")
+                home_stages.add(int(home_stage_ids[index]))
+            for home_stage_id in home_stages:
+                if home_stage_id not in bounds:
+                    raise ValueError(
+                        f"Protocol sample references unknown home stage {home_stage_id}"
+                    )
+                item = bounds[home_stage_id]
+                first_stage_id = item["first_stage_id"]
+                last_stage_id = item["last_stage_id"]
+                item["first_stage_id"] = (
+                    int(exposure_stage_id)
+                    if first_stage_id is None
+                    else min(int(first_stage_id), int(exposure_stage_id))
+                )
+                item["last_stage_id"] = (
+                    int(exposure_stage_id)
+                    if last_stage_id is None
+                    else max(int(last_stage_id), int(exposure_stage_id))
+                )
+
+        exposure_by_generator = {}
+        for stage_id, entry in enumerate(self.protocol_generator_order):
+            item = bounds[stage_id]
+            first_stage_id = item["first_stage_id"]
+            last_stage_id = item["last_stage_id"]
+            if first_stage_id is None or last_stage_id is None:
+                first_stage_id = stage_id
+                last_stage_id = stage_id
+            exposure_by_generator[entry["generator_name"]] = {
+                "first_stage_id": int(first_stage_id),
+                "last_stage_id": int(last_stage_id),
+            }
+        return exposure_by_generator
+
+    def _seen_protocol_generators(self, stage_id):
+        return [
+            generator_name
+            for generator_name in self._protocol_generator_names()
+            if self.protocol_exposure_by_generator.get(generator_name, {}).get(
+                "first_stage_id",
+                stage_id + 1,
+            ) <= stage_id
+        ]
+
+    def _seen_protocol_generators_at_online_sample(self, sample_count):
+        """Return generators present in the exact consumed stream prefix."""
+        sample_count = max(0, int(sample_count))
+        home_stage_ids = getattr(self.train_dataset, "online_stage_targets", [])
+        seen_home_stages = set()
+        base_stage_id = self._base_stage_id()
+        if base_stage_id is not None:
+            seen_home_stages.update(
+                int(home_stage_ids[index])
+                for index in self.train_sampler.indices.get(base_stage_id, [])
+            )
+
+        remaining = sample_count
+        for exposure_stage_id in self._online_stage_ids():
+            if remaining <= 0:
+                break
+            stage_indices = self.train_sampler.indices.get(exposure_stage_id, [])
+            consumed = stage_indices[:remaining]
+            seen_home_stages.update(int(home_stage_ids[index]) for index in consumed)
+            remaining -= len(consumed)
+
+        return [
+            generator_name
+            for generator_id, generator_name in enumerate(self._protocol_generator_names())
+            if generator_id in seen_home_stages
+        ]
+
+    def _exposed_train_indices_by_generator(self, stage_id):
+        """Group only samples that have actually appeared by this bucket."""
+        generator_names = self._protocol_generator_names()
+        home_stage_ids = getattr(self.train_dataset, "online_stage_targets", [])
+        grouped = {generator_name: [] for generator_name in generator_names}
+        for exposure_stage_id, indices in getattr(self.train_sampler, "indices", {}).items():
+            if int(exposure_stage_id) > int(stage_id):
+                continue
+            for index in indices:
+                home_stage_id = int(home_stage_ids[index])
+                if 0 <= home_stage_id < len(generator_names):
+                    grouped[generator_names[home_stage_id]].append(index)
+        return {
+            generator_name: indices
+            for generator_name, indices in grouped.items()
+            if indices
+        }
 
     def _log_protocol_stream_metadata(self):
         stage_indices = getattr(self.train_dataset, "stage_indices", {})
@@ -535,11 +671,7 @@ class _Trainer():
         if self.profile:
             self.profile_worker(0)
         else:
-            # Distributed Launch
-            if self.ngpus_per_nodes > 1:
-                mp.spawn(self.main_worker, nprocs=self.ngpus_per_nodes, join=True)
-            else:
-                self.main_worker(0)
+            self.main_worker(0)
 
     def _protocol_eval_average(self, stage_metric: StageMetrics, metric_name="accuracy"):
         values = [
@@ -962,21 +1094,33 @@ class _Trainer():
         if self.eval_interval <= 0 or self._next_stream_eval_at is None:
             return
 
-        while self.online_samples_seen >= self._next_stream_eval_at:
-            stream_sample = self._next_stream_eval_at
-            eval_stage_id = self._stage_id_for_seen_samples(stream_sample)
-            if self.distributed:
-                dist.barrier()
-            if self.is_main_process():
-                stage_name = self.protocol_generator_order[eval_stage_id]["generator_name"]
-                stage_metric = self._evaluate_protocol_stage(eval_stage_id)
-                self._log_protocol_eval(stage_metric, stage_name, stream_sample=stream_sample)
-                stream_payload = self._protocol_metric_payload(stage_metric)
-                stream_payload["online_sample"] = stream_sample
-                stream_metrics.append(stream_payload)
-            if self.distributed:
-                dist.barrier()
+        if self.online_samples_seen < self._next_stream_eval_at:
+            return
+
+        scheduled_sample = int(self._next_stream_eval_at)
+        stream_sample = int(self.online_samples_seen)
+        while self._next_stream_eval_at <= stream_sample:
             self._next_stream_eval_at += self.eval_interval
+
+        eval_stage_id = self._stage_id_for_seen_samples(stream_sample)
+        if self.distributed:
+            dist.barrier()
+        if self.is_main_process():
+            stage_name = self.protocol_generator_order[eval_stage_id]["generator_name"]
+            seen_generators = self._seen_protocol_generators_at_online_sample(
+                stream_sample
+            )
+            stage_metric = self._evaluate_protocol_stage(
+                eval_stage_id,
+                seen_generators=seen_generators,
+            )
+            self._log_protocol_eval(stage_metric, stage_name, stream_sample=stream_sample)
+            stream_payload = self._protocol_metric_payload(stage_metric)
+            stream_payload["online_sample"] = stream_sample
+            stream_payload["scheduled_online_sample"] = scheduled_sample
+            stream_metrics.append(stream_payload)
+        if self.distributed:
+            dist.barrier()
 
     def _maybe_report_training(self, samples_cnt, loss, acc, next_report_at, report_period):
         if samples_cnt >= next_report_at:
@@ -1001,18 +1145,12 @@ class _Trainer():
             dist.barrier()
 
     def _log_protocol_train_eval(self, stage_id, stage_name):
-        seen_generators = [
-            entry["generator_name"]
-            for entry in self.protocol_generator_order[: stage_id + 1]
-        ]
         train_scores = {}
         max_train_eval_samples = int(
             getattr(self, "protocol_train_eval_max_samples", 5000) or 0
         )
-        for seen_stage_id, generator_name in enumerate(seen_generators):
-            indices = self.train_dataset.stage_indices.get(seen_stage_id, [])
-            if not indices:
-                continue
+        exposed_indices = self._exposed_train_indices_by_generator(stage_id)
+        for generator_name, indices in exposed_indices.items():
             if max_train_eval_samples > 0 and len(indices) > max_train_eval_samples:
                 stride = max(1, len(indices) // max_train_eval_samples)
                 indices = indices[::stride][:max_train_eval_samples]
@@ -1215,22 +1353,27 @@ class _Trainer():
     def _save_protocol_summary(self, stage_metrics, stream_metrics):
         if not self.is_main_process():
             return
-        metrics = compute_online_metrics(stage_metrics)
+        exposure_by_generator = self.protocol_exposure_by_generator
+        metrics = compute_online_metrics(stage_metrics, exposure_by_generator)
         generator_order = self._protocol_generator_names()
         summary = {
+            "metrics_schema_version": PROTOCOL_METRICS_SCHEMA_VERSION,
             "stage_metrics": [
                 self._protocol_metric_payload(item)
                 for item in stage_metrics
             ],
             "stream_metrics": stream_metrics,
             "metrics": metrics,
+            "exposure_by_generator": exposure_by_generator,
             "protocol_matrix": build_protocol_metric_matrix(
                 stage_metrics,
                 generator_order,
+                exposure_by_generator,
             ),
             "final_summary": compute_protocol_matrix_summary(
                 stage_metrics,
                 generator_order,
+                exposure_by_generator,
             ),
         }
         output_path = os.path.join(self.log_dir, f"seed_{self.rnd_seed}_ocl_metrics.json")
@@ -1272,12 +1415,11 @@ class _Trainer():
         stage_id: int,
         *,
         include_full_matrix: bool = False,
+        seen_generators=None,
     ) -> StageMetrics:
         self.model.eval()
-        seen_generators = [
-            entry["generator_name"]
-            for entry in self.protocol_generator_order[: stage_id + 1]
-        ]
+        if seen_generators is None:
+            seen_generators = self._seen_protocol_generators(stage_id)
         current_generator = self.protocol_generator_order[stage_id]["generator_name"]
         stage_generators = getattr(self.train_dataset, "stage_generators", {}).get(stage_id, [])
         self._prepare_protocol_eval()
@@ -1449,7 +1591,6 @@ class _Trainer():
             "singleprompt",
             "slca",
             "sdlora",
-            "rineside_gauss",
             "rigev1",
             "rigev2",
         }:
@@ -1517,7 +1658,7 @@ class _Trainer():
     def profile_worker(self, gpu) -> None:
         # ============ Toy experiment setup ============
         self.gpu    = gpu % self.ngpus_per_nodes
-        self.device = torch.device(self.gpu)
+        self.device = self._resolve_device(self.gpu)
         if self.distributed:
             self.local_rank = self.gpu
             if 'SLURM_PROCID' in os.environ.keys():

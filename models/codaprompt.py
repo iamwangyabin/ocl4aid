@@ -1,4 +1,3 @@
-import copy
 import logging
 from typing import Iterable
 
@@ -12,7 +11,8 @@ import models.vit as vit
 logger = logging.getLogger()
 
 def ortho_penalty(t):
-    return ((t @t.T - torch.eye(t.shape[0]).cuda())**2).mean()
+    identity = torch.eye(t.shape[0], device=t.device, dtype=t.dtype)
+    return ((t @ t.T - identity) ** 2).mean()
 
 def tensor_prompt(a, b, c=None, ortho=False):
     if c is None:
@@ -42,8 +42,14 @@ class CodaPrompt(nn.Module):
         self.kwargs = kwargs
         pretrained = bool(kwargs.get("pretrained", True))
         self.ortho_mu = ortho_mu
-        self.task_num = task_num
+        self.task_num = int(task_num)
         self.num_classes = num_classes
+
+        if self.task_num <= 0:
+            raise ValueError(f"task_num must be positive, got {self.task_num}")
+        requested_e_pool = int(e_pool)
+        if requested_e_pool <= 0:
+            raise ValueError(f"e_pool must be positive, got {requested_e_pool}")
 
         self.task_count = 0
 
@@ -62,23 +68,71 @@ class CodaPrompt(nn.Module):
         self.backbone.fc.bias.requires_grad   = True
 
         # Slice the eprompt
-        self.key_d = key_dim
-        self.num_pt_per_task = int(e_pool / task_num)
-
-        self.e_pool = e_pool
-        self.len_e_prompt = len_e_prompt
+        self.key_d = int(key_dim)
+        self.len_e_prompt = int(len_e_prompt)
+        if self.len_e_prompt <= 0:
+            raise ValueError(
+                f"len_e_prompt must be positive, got {self.len_e_prompt}"
+            )
+        self.requested_e_pool = requested_e_pool
+        self.num_pt_per_task = max(
+            1,
+            (requested_e_pool + self.task_num - 1) // self.task_num,
+        )
+        self.e_pool = self.num_pt_per_task * self.task_num
+        max_orthogonal_components = min(
+            self.key_d,
+            self.len_e_prompt * int(self.backbone.num_features),
+        )
+        if self.e_pool > max_orthogonal_components:
+            raise ValueError(
+                "CodaPrompt cannot construct the requested orthogonal pool: "
+                f"effective e_pool={self.e_pool} exceeds feature capacity "
+                f"{max_orthogonal_components}."
+            )
+        if self.e_pool != requested_e_pool:
+            logger.info(
+                "Expanding CodaPrompt e_pool from %s to %s so %s tasks receive %s components each",
+                requested_e_pool,
+                self.e_pool,
+                self.task_num,
+                self.num_pt_per_task,
+            )
         self.e_length = len(pos_e_prompt) if pos_e_prompt else 0
         self.register_buffer('pos_e_prompt', torch.tensor(pos_e_prompt, dtype=torch.int64))
         for e in self.pos_e_prompt:
-            p = tensor_prompt(e_pool, self.len_e_prompt, self.backbone.num_features)
-            k = tensor_prompt(e_pool, self.key_d)
-            a = tensor_prompt(e_pool, self.key_d)
-            p = self.gram_schmidt(p)
-            k = self.gram_schmidt(k)
-            a = self.gram_schmidt(a)
+            p = tensor_prompt(self.e_pool, self.len_e_prompt, self.backbone.num_features)
+            k = tensor_prompt(self.e_pool, self.key_d)
+            a = tensor_prompt(self.e_pool, self.key_d)
+            with torch.no_grad():
+                p.copy_(self.gram_schmidt(p))
+                k.copy_(self.gram_schmidt(k))
+                a.copy_(self.gram_schmidt(a))
             setattr(self, f'e_p_{e}',p)
             setattr(self, f'e_k_{e}',k)
             setattr(self, f'e_a_{e}',a)
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        for e in self.pos_e_prompt:
+            for kind in ("p", "k", "a"):
+                key = f"e_{kind}_{int(e)}"
+                saved = state_dict.get(key)
+                current = getattr(self, key, None)
+                if (
+                    torch.is_tensor(saved)
+                    and torch.is_tensor(current)
+                    and saved.ndim > 0
+                    and saved.shape != current.shape
+                    and int(saved.shape[0]) == self.requested_e_pool
+                    and self.requested_e_pool != self.e_pool
+                ):
+                    raise RuntimeError(
+                        "This CodaPrompt checkpoint uses the legacy non-divisible "
+                        f"prompt pool shape ({self.requested_e_pool}); the corrected "
+                        f"effective pool is {self.e_pool}. Regenerate the base "
+                        "checkpoint before rerunning CodaPrompt."
+                    )
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
 
     def prompt_tuning(self,
                       x        : torch.Tensor,
@@ -168,7 +222,7 @@ class CodaPrompt(nn.Module):
     def process_task_count(self):
         self.task_count += 1
 
-        if self.task_count != self.task_num:
+        if self.task_count < self.task_num:
 
             # in the spirit of continual learning, we will reinit the new components
             # for the new task with Gram Schmidt
@@ -182,16 +236,15 @@ class CodaPrompt(nn.Module):
                 K = getattr(self,f'e_k_{e}')
                 A = getattr(self,f'e_a_{e}')
                 P = getattr(self,f'e_p_{e}')
-                k = self.gram_schmidt(K)
-                a = self.gram_schmidt(A)
-                p = self.gram_schmidt(P)
-                setattr(self, f'e_p_{e}',p)
-                setattr(self, f'e_k_{e}',k)
-                setattr(self, f'e_a_{e}',a)
+                with torch.no_grad():
+                    K.copy_(self.gram_schmidt(K))
+                    A.copy_(self.gram_schmidt(A))
+                    P.copy_(self.gram_schmidt(P))
 
     def loss_fn(self, output, target):
         return F.cross_entropy(output, target)
 
+    @torch.no_grad()
     def gram_schmidt(self, vv):
 
         def projection(u, v):
@@ -205,14 +258,12 @@ class CodaPrompt(nn.Module):
         # check if the tensor is 3D and flatten the last two dimensions if necessary
         is_3d = len(vv.shape) == 3
         if is_3d:
-            shape_2d = copy.deepcopy(vv.shape)
+            shape_2d = vv.shape
             vv = vv.view(vv.shape[0],-1)
 
         # swap rows and columns
         vv = vv.T
 
-        # process matrix size
-        nk = vv.size(1)
         uu = torch.zeros_like(vv, device=vv.device)
 
         # get starting point
@@ -225,7 +276,7 @@ class CodaPrompt(nn.Module):
             redo = True
             while redo:
                 redo = False
-                vk = torch.randn_like(vv[:,k]).to(vv.device)
+                vk = torch.randn_like(vv[:,k])
                 uk = 0
                 for j in range(0, k):
                     if not redo:
@@ -248,4 +299,4 @@ class CodaPrompt(nn.Module):
         if is_3d:
             uu = uu.view(shape_2d)
         
-        return torch.nn.Parameter(uu) 
+        return uu

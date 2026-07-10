@@ -55,12 +55,12 @@ before the online continual stream starts. The default framework config uses
 10 epochs. Set it to 0 only when stage 0 should be included in the online
 continual stream instead.
 
-`--batchsize` is the global online exposure batch size, not a per-GPU batch
-size. In distributed training the trainer splits it evenly across ranks before
-building each local dataloader, so one synchronized online update still
-corresponds to the requested global number of newly exposed stream samples. The
-value must be divisible by `world_size`; otherwise training exits instead of
-silently changing the online setting.
+`--batchsize` is the online exposure batch size. Training is intentionally
+single-process and single-GPU so one update always corresponds to exactly that
+many newly exposed stream samples. Machines may have multiple visible GPUs, but
+the runner uses only the first visible device; select another device with
+`CUDA_VISIBLE_DEVICES`. Distributed launchers fail fast because sharding the
+stream changes online ordering and batch semantics.
 
 Temporal stage blur is controlled by `--stage_blurry_n`/`--stage_blurry_m` (or
 `--n`/`--m`). With the default base stage enabled, stage 0 remains a clean base
@@ -213,8 +213,21 @@ per-stage binary deepfake detection metrics:
 - `ap`
 - `auc`
 
-The summary also reports average performance, forgetting, and plasticity for
-each metric.
+The summary also reports average performance, forgetting, plasticity, BWT, and
+FWT for each metric. In blurry streams, these use the sampler's actual
+per-generator exposure window rather than the nominal stage number: FWT is
+measured only from an evaluation before the first exposed sample, while
+forgetting/BWT start after the last exposed sample. Generators completed in the
+final stream bucket are excluded from forgetting/BWT because there is no later
+stage in which forgetting can be observed; the JSON includes the valid-term
+counts for each aggregate.
+These exposure-aware definitions are identified by `metrics_schema_version: 2`;
+do not pool them with older summaries that used the previous denominator and
+nominal blurry-stage boundaries.
+
+CodaPrompt now expands a non-divisible prompt pool to complete per-task slices.
+Legacy CodaPrompt base checkpoints whose prompt-pool shape changes are rejected
+with an explicit regeneration error rather than being loaded ambiguously.
 
 ## Tests
 

@@ -26,8 +26,8 @@ METHODS = [
     "norga",
     "sdlora",
     "mvp",
-    "rineside_gauss",
     "rigev1",
+    "rigev2",
 ]
 
 
@@ -195,6 +195,8 @@ class MethodSmokeTests(unittest.TestCase):
                     "8",
                     "--adapter_dim",
                     "8",
+                    "--rigev2_replay_dim",
+                    "96",
                     "--sdlora_rank",
                     "2",
                     "--ca_num_per_class",

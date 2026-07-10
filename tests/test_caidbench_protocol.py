@@ -152,6 +152,14 @@ class CAIDBenchmarkProtocolTests(unittest.TestCase):
         self.assertEqual(len(second_stage_indices), 4)
         self.assertEqual(set(dataset.metadata.iloc[first_stage_indices]["task_id"].tolist()), {20})
         self.assertEqual(set(dataset.metadata.iloc[second_stage_indices]["task_id"].tolist()), {10})
+        self.assertEqual(
+            [dataset.online_stage_targets[index] for index in first_stage_indices],
+            [0, 0, 0, 0],
+        )
+        self.assertEqual(
+            [dataset.online_stage_targets[index] for index in second_stage_indices],
+            [1, 1, 1, 1],
+        )
 
     def test_protocol_targets_are_binary(self):
         dataset = CAIDBenchmarkProtocol(

@@ -258,6 +258,14 @@ Seen average AP means average AP over generators whose stages have already
 appeared by that point. This avoids letting future unseen generators dominate
 the curve.
 
+For temporally blurry streams, "seen" and all transfer/forgetting boundaries
+come from the samples actually assigned to each stream bucket, not the nominal
+generator stage. Report the corresponding `num_*_forgetting_generators`,
+`num_*_bwt_generators`, and `num_*_fwt_generators` fields with aggregates. A
+generator whose last sample occurs in the final bucket has no observable
+forgetting/BWT term, and a generator with no clean pre-exposure evaluation has
+no valid FWT term.
+
 Also keep the final full matrix for per-generator diagnosis:
 
 ```text
