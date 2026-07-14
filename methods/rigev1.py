@@ -122,7 +122,10 @@ class RIGEv1(_Trainer):
 
         for _ in range(inner_steps):
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=self.use_amp):
+            # Selected residual features can exceed FP16's stable linear range.
+            # Keep online expert optimization in FP32; the supervised base head
+            # may still use AMP through the framework setting.
+            with torch.cuda.amp.autocast(enabled=self.use_amp and self.task_id == 0):
                 if self.task_id == 0:
                     logits = model.base_head(z)
                     train_y = y
@@ -135,6 +138,11 @@ class RIGEv1(_Trainer):
                     alpha = model.current_alpha().to(dtype=train_base_logits.dtype)
                     logits = train_base_logits + alpha * model.current_head()(train_online_z)
                 loss = self.criterion(logits, train_y)
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(
+                        "RIGE produced a non-finite training loss "
+                        f"at stage={self.task_id}; refusing to emit invalid metrics."
+                    )
 
             self.scaler.scale(loss).backward()
             self.scaler.step(optimizer)
@@ -142,6 +150,11 @@ class RIGEv1(_Trainer):
 
             with torch.no_grad():
                 current_logits = self._active_stage_logits_from_z(model, z, online_z)
+                if not torch.isfinite(current_logits).all():
+                    raise FloatingPointError(
+                        "RIGE produced non-finite logits after an optimizer step "
+                        f"at stage={self.task_id}."
+                    )
                 _, preds = current_logits.topk(self.topk, 1, True, True)
                 acc = torch.sum(preds == y.unsqueeze(1)).item() / y.size(0)
 

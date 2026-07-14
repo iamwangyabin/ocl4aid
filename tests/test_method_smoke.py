@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -197,6 +198,22 @@ class MethodSmokeTests(unittest.TestCase):
                     "8",
                     "--rigev2_replay_dim",
                     "96",
+                    "--rigev2_allocation_mode",
+                    "detected",
+                    "--rigev2_change_threshold_mode",
+                    "fixed",
+                    "--rigev2_change_fixed_threshold",
+                    "0.0",
+                    "--rigev2_change_window",
+                    "2",
+                    "--rigev2_change_min_class_count",
+                    "1",
+                    "--rigev2_change_warmup_samples",
+                    "2",
+                    "--rigev2_change_persistence",
+                    "1",
+                    "--rigev2_change_cooldown_samples",
+                    "0",
                     "--sdlora_rank",
                     "2",
                     "--ca_num_per_class",
@@ -217,6 +234,14 @@ class MethodSmokeTests(unittest.TestCase):
                 metrics_path = log_root / f"smoke_{method}" / "seed_1_ocl_metrics.json"
                 if result.returncode != 0 or not metrics_path.is_file():
                     failures[method] = result.stdout[-5000:]
+                elif method == "rigev2":
+                    payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+                    diagnostics = payload.get("method_diagnostics", {})
+                    if diagnostics.get("final_expert_count", 0) <= 1:
+                        failures[method] = (
+                            "RIGEv2 detector smoke did not allocate a residual expert\n"
+                            + result.stdout[-5000:]
+                        )
 
             if failures:
                 detail = "\n\n".join(

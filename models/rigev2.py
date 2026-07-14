@@ -31,6 +31,7 @@ class RIGEv2(RIGEv1Model):
         rigev2_eval_mode: str = "feature_gaussian",
         rigev2_alpha_init: float = 0.2,
         rigev2_replay_dim: int = 1536,
+        rigev2_direct_classifier: bool = False,
         pretrained: bool = True,
         **kwargs,
     ):
@@ -73,6 +74,7 @@ class RIGEv2(RIGEv1Model):
         if self.rank <= 0:
             raise ValueError(f"rigev2_online_rank must be positive, got {self.rank}")
         self.online_feature_space = "headweight"
+        self.direct_classifier = bool(rigev2_direct_classifier)
         self.register_buffer(
             "online_feature_indices",
             torch.empty(0, dtype=torch.long),
@@ -87,6 +89,41 @@ class RIGEv2(RIGEv1Model):
             rigev2_rank,
             self.rank,
         )
+
+    @staticmethod
+    def _zero_output_layer(head):
+        output = getattr(head, "out", None)
+        if output is None and hasattr(head, "net") and len(head.net) > 0:
+            output = head.net[-1]
+        if output is None or not hasattr(output, "weight"):
+            raise TypeError("Unsupported RIGEv2 residual head for zero-output initialization")
+        with torch.no_grad():
+            output.weight.zero_()
+            if getattr(output, "bias", None) is not None:
+                output.bias.zero_()
+
+    def add_residual_head(self, stage_id: int):
+        previous_count = len(self.residual_heads)
+        head = super().add_residual_head(stage_id)
+        if not self.direct_classifier:
+            for residual in self.residual_heads[previous_count:]:
+                self._zero_output_layer(residual)
+        return head
+
+    def combined_logits_from_z(self, z, online_z=None, expert_id=None):
+        online_z = z if online_z is None else online_z
+        expert_id = self.active_stage if expert_id is None else int(expert_id)
+        if self.direct_classifier and expert_id > 0:
+            return self.residual_heads[expert_id - 1](online_z)
+        return super().combined_logits_from_z(z, online_z=online_z, expert_id=expert_id)
+
+    def expert_logits_from_z(self, z, online_z=None):
+        if not self.direct_classifier:
+            return super().expert_logits_from_z(z, online_z=online_z)
+        online_z = z if online_z is None else online_z
+        experts = [self.base_head(z)]
+        experts.extend(head(online_z) for head in self.residual_heads)
+        return torch.stack(experts, dim=1)
 
     def set_online_feature_indices(self, indices: torch.Tensor):
         indices = indices.detach().to(

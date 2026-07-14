@@ -3,6 +3,8 @@ rigev2_feature_layers: quartile
 rigev2_online_feature_layers: same
 rigev2_replay_dim: 1536
 rigev2_feature_block_dim: 768
+rigev2_feature_selector: headweight
+rigev2_feature_selector_seed: 1
 rigev2_head_type: lowrank
 rigev2_online_head_type: lowrank
 rigev2_rank: 16
@@ -26,3 +28,43 @@ rigev2_calibration_score_drift_threshold: 0.2
 rigev2_calibration_drift_ema_beta: 0.9
 rigev2_calibration_score_window: 5000
 rigev2_weight_decay: 0.0001
+
+# Boundary-free RACE stream and expert allocation.
+rigev2_continuous_stream: true
+rigev2_residual_enabled: true
+rigev2_allocation_mode: detected
+rigev2_allocation_num_regimes: 0
+rigev2_allocation_seed: 1
+rigev2_max_residual_experts: 32
+
+# Prefix-causal class-conditional two-window detector.
+rigev2_change_window: 512
+rigev2_change_ewma_beta: 0.9
+rigev2_change_false_alarm_rate: 0.05
+rigev2_change_persistence: 3
+rigev2_change_warmup_samples: 512
+rigev2_change_cooldown_samples: 1024
+rigev2_change_min_class_count: 16
+rigev2_change_min_valid_classes: 2
+rigev2_change_class_conditional: true
+rigev2_change_threshold_mode: base_quantile
+rigev2_change_fixed_threshold: 1.0
+rigev2_change_candidate_backfill: true
+rigev2_change_backfill_size: 128
+rigev2_change_calibration_max_samples: 20000
+rigev2_change_calibration_min_scores: 10
+
+# Persistent compressed-feature replay.
+rigev2_replay_sampling: class_balanced
+rigev2_replay_replacement: fifo
+rigev2_replay_reset_on_change: false
+rigev2_replay_active_only: false
+rigev2_replay_loss_weight: 1.0
+
+# Isolated residual and routing/calibration ablation switches.
+rigev2_unfreeze_base_head: false
+rigev2_direct_classifier: false
+rigev2_fixed_alpha: false
+rigev2_route_metric: gaussian
+rigev2_threshold_scope: per_expert
+rigev2_classification_fixed_threshold: 0.0

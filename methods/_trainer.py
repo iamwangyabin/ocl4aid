@@ -29,7 +29,7 @@ from protocol_metrics import (
     compute_protocol_matrix_summary,
 )
 from utils.augment import Cutout
-from utils.onlinesampler import ManifestStageSampler
+from utils.onlinesampler import ManifestStageSampler, ManifestStreamSampler
 from utils.train_utils import select_model, select_optimizer, select_scheduler
 
 logger = logging.getLogger()
@@ -1306,6 +1306,20 @@ class _Trainer():
         if not online_stage_ids:
             logger.info("No online continual stages remain after base stage.")
 
+        if self._uses_continuous_online_stream():
+            self._run_continuous_online_stream(
+                online_stage_ids,
+                stage_metrics,
+                stream_metrics,
+                samples_cnt,
+                online_samples_cnt,
+                num_report,
+                report_period,
+            )
+            self.phase = "done"
+            self._save_protocol_summary(stage_metrics, stream_metrics)
+            return
+
         for task_pos, stage_id in enumerate(online_stage_ids):
             stage_name = self.protocol_generator_order[stage_id]["generator_name"]
             logger.info("\n")
@@ -1350,6 +1364,145 @@ class _Trainer():
         self.phase = "done"
         self._save_protocol_summary(stage_metrics, stream_metrics)
 
+    def _run_continuous_online_stream(
+        self,
+        online_stage_ids,
+        stage_metrics,
+        stream_metrics,
+        samples_cnt,
+        online_samples_cnt,
+        num_report,
+        report_period,
+    ):
+        """Run one learner-blind stream while retaining evaluator checkpoints."""
+        if not online_stage_ids:
+            return
+
+        online_stage_indices = {
+            int(stage_id): list(self.train_dataset.stage_indices.get(int(stage_id), []))
+            for stage_id in online_stage_ids
+        }
+        stream_sampler = ManifestStreamSampler(
+            self.online_iter_dataset,
+            online_stage_indices,
+            seed=self.rnd_seed,
+            stage_blurry_n=getattr(self, "stage_blurry_n", 100),
+            stage_blurry_m=getattr(self, "stage_blurry_m", 0),
+            stage_blurry_start_pos=0,
+        )
+        stream_loader = DataLoader(
+            self.online_iter_dataset,
+            batch_size=self.batchsize,
+            sampler=stream_sampler,
+            pin_memory=False,
+            num_workers=self.n_worker,
+            persistent_workers=self.n_worker > 0,
+            collate_fn=safe_collate_drop_bad,
+        )
+        self.online_stream_length = int(len(stream_sampler))
+        self.online_before_stream()
+
+        checkpoint_offsets = [
+            (int(stream_sampler.stage_end_offsets[int(stage_id)]), int(stage_id))
+            for stage_id in online_stage_ids
+        ]
+        checkpoint_pos = 0
+        oracle_boundaries = self._uses_oracle_boundaries()
+        if oracle_boundaries:
+            self.online_oracle_boundary()
+
+        for batch in stream_loader:
+            if self._skip_empty_batch(batch, "continuous_online_stream"):
+                continue
+            images, labels, _idx = batch
+            if oracle_boundaries:
+                batch_pos = 0
+                while batch_pos < images.size(0):
+                    next_offset = checkpoint_offsets[checkpoint_pos][0]
+                    take = min(
+                        images.size(0) - batch_pos,
+                        next_offset - online_samples_cnt,
+                    )
+                    if take <= 0:
+                        raise RuntimeError(
+                            "Oracle stream checkpoint accounting became non-positive."
+                        )
+                    chunk_images = images[batch_pos : batch_pos + take]
+                    chunk_labels = labels[batch_pos : batch_pos + take]
+                    loss, acc = self.online_step(
+                        chunk_images,
+                        chunk_labels,
+                        None,
+                    )
+                    batch_pos += take
+                    online_samples_cnt += take
+                    samples_cnt += take
+                    self.online_samples_seen = int(online_samples_cnt)
+                    num_report = self._maybe_report_training(
+                        samples_cnt,
+                        loss,
+                        acc,
+                        num_report,
+                        report_period,
+                    )
+                    self._maybe_run_stream_eval(stream_metrics)
+                    sys.stdout.flush()
+                    if online_samples_cnt != next_offset:
+                        continue
+                    stage_id = checkpoint_offsets[checkpoint_pos][1]
+                    logger.info(
+                        "Evaluator checkpoint %s/%s at online sample %s "
+                        "(nominal offset %s; learner state unchanged)",
+                        checkpoint_pos + 1,
+                        len(checkpoint_offsets),
+                        online_samples_cnt,
+                        next_offset,
+                    )
+                    self._evaluate_and_log_stage(stage_id, stage_metrics)
+                    checkpoint_pos += 1
+                    if checkpoint_pos < len(checkpoint_offsets):
+                        self.online_oracle_boundary()
+                continue
+
+            # Evaluator offsets never split a learner batch. This prevents the
+            # learner from inferring nominal boundaries from short batches.
+            loss, acc = self.online_step(images, labels, None)
+            batch_count = int(images.size(0))
+            online_samples_cnt += batch_count
+            samples_cnt += batch_count
+            self.online_samples_seen = int(online_samples_cnt)
+            num_report = self._maybe_report_training(
+                samples_cnt,
+                loss,
+                acc,
+                num_report,
+                report_period,
+            )
+            self._maybe_run_stream_eval(stream_metrics)
+            sys.stdout.flush()
+            while (
+                checkpoint_pos < len(checkpoint_offsets)
+                and online_samples_cnt >= checkpoint_offsets[checkpoint_pos][0]
+            ):
+                nominal_offset, stage_id = checkpoint_offsets[checkpoint_pos]
+                logger.info(
+                    "Evaluator checkpoint %s/%s at online sample %s "
+                    "(nominal offset %s; learner state unchanged)",
+                    checkpoint_pos + 1,
+                    len(checkpoint_offsets),
+                    online_samples_cnt,
+                    nominal_offset,
+                )
+                self._evaluate_and_log_stage(stage_id, stage_metrics)
+                checkpoint_pos += 1
+
+        if checkpoint_pos != len(checkpoint_offsets):
+            raise RuntimeError(
+                f"Continuous stream ended after {checkpoint_pos}/{len(checkpoint_offsets)} "
+                "evaluator checkpoints."
+            )
+        self.online_after_stream()
+
     def _save_protocol_summary(self, stage_metrics, stream_metrics):
         if not self.is_main_process():
             return
@@ -1376,6 +1529,9 @@ class _Trainer():
                 exposure_by_generator,
             ),
         }
+        method_payload = self._method_summary_payload()
+        if method_payload:
+            summary["method_diagnostics"] = method_payload
         output_path = os.path.join(self.log_dir, f"seed_{self.rnd_seed}_ocl_metrics.json")
         with open(output_path, "w", encoding="utf-8") as handle:
             json.dump(summary, handle, indent=2, sort_keys=True)
@@ -1778,6 +1934,24 @@ class _Trainer():
 
     def online_after_task(self, task_id):
         del task_id
+
+    def _uses_continuous_online_stream(self):
+        return False
+
+    def _uses_oracle_boundaries(self):
+        return False
+
+    def online_before_stream(self):
+        pass
+
+    def online_after_stream(self):
+        pass
+
+    def online_oracle_boundary(self):
+        pass
+
+    def _method_summary_payload(self):
+        return {}
 
     def update_schedule(self, reset=False):
         if reset:

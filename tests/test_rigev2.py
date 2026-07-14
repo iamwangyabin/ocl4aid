@@ -5,6 +5,8 @@ import unittest
 import torch
 
 from methods.rigev2 import RIGEv2
+from models.rigev1 import LowRankResidualHead
+from models.rigev2 import RIGEv2 as RIGEv2Model
 
 
 class _FakeRIGEv2Model:
@@ -105,6 +107,76 @@ def _checkpoint_state(*, selector_marker=None):
 
 
 class RIGEv2StatisticsTests(unittest.TestCase):
+    def test_race_uses_continuous_stream_by_default(self):
+        trainer = _RIGEv2Harness(indices=[1, 3])
+
+        self.assertTrue(trainer._uses_continuous_online_stream())
+
+    def test_random_feature_selector_is_seeded_and_budget_matched(self):
+        trainer = _RIGEv2Harness(indices=[1, 3])
+        trainer.rigev2_feature_selector = "random"
+        trainer.rigev2_feature_selector_seed = 7
+        scores = torch.arange(20, dtype=torch.float32)
+
+        first = trainer._select_headweight_indices(scores, 6)
+        second = trainer._select_headweight_indices(scores, 6)
+
+        self.assertEqual(first.numel(), 6)
+        self.assertTrue(torch.equal(first, second))
+        self.assertEqual(first.unique().numel(), 6)
+
+    def test_identity_selector_requires_full_dimension(self):
+        trainer = _RIGEv2Harness(indices=[1, 3])
+        trainer.rigev2_feature_selector = "identity"
+        scores = torch.ones(4)
+
+        self.assertTrue(
+            torch.equal(
+                trainer._select_headweight_indices(scores, 4),
+                torch.arange(4),
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "requires replay_dim"):
+            trainer._select_headweight_indices(scores, 2)
+
+    def test_residual_output_layer_is_zero_initialized(self):
+        head = LowRankResidualHead(feature_dim=8, rank=3, num_classes=2)
+        RIGEv2Model._zero_output_layer(head)
+
+        output = head(torch.randn(5, 8))
+
+        self.assertTrue(torch.equal(output, torch.zeros_like(output)))
+
+    def test_fixed_and_random_allocations_are_batch_aligned(self):
+        trainer = _RIGEv2Harness(indices=[1, 3])
+        trainer.batchsize = 16
+
+        fixed = trainer._batch_aligned_allocation_positions("fixed", 5, 1000, 7)
+        random = trainer._batch_aligned_allocation_positions("random", 5, 1000, 7)
+
+        self.assertEqual(len(fixed), 4)
+        self.assertEqual(len(random), 4)
+        self.assertEqual(fixed[0], 0)
+        self.assertEqual(random[0], 0)
+        self.assertTrue(all(offset % 16 == 0 for offset in fixed + random))
+
+    def test_base_calibration_interleaves_grouped_binary_labels(self):
+        trainer = _RIGEv2Harness(indices=[1, 3])
+        features = torch.arange(24, dtype=torch.float32).view(12, 2)
+        labels = torch.tensor([0] * 6 + [1] * 6)
+
+        mixed_features, mixed_labels = trainer._interleave_base_calibration(
+            features,
+            labels,
+        )
+
+        self.assertEqual(mixed_features.shape, features.shape)
+        self.assertEqual(mixed_labels.tolist()[::2], [0] * 6)
+        self.assertEqual(mixed_labels.tolist()[1::2], [1] * 6)
+        again, again_labels = trainer._interleave_base_calibration(features, labels)
+        self.assertTrue(torch.equal(mixed_features, again))
+        self.assertTrue(torch.equal(mixed_labels, again_labels))
+
     def test_rejects_raw_route_space_instead_of_only_changing_checkpoint_validation(self):
         trainer = _RIGEv2Harness(indices=[1, 3])
         trainer.rigev2_route_space = "raw"
